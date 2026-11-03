@@ -27,6 +27,16 @@
 .set-slider { display: flex; align-items: center; gap: 10px; width: 220px; flex: none; }
 .set-slider input { flex: 1; accent-color: var(--accent); }
 .set-val { width: 40px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; font-size: 12px; }
+/* 界面大小：自定义缩放倍率数值框 */
+.scale-ctl { display: flex; align-items: center; gap: 6px; flex: none; }
+.card.settings .set-row .scale-num,
+.scale-num { box-sizing: border-box; width: 72px; height: 32px; padding: 0 8px; border: 1px solid var(--line-strong, rgba(27, 54, 92, .15)); border-radius: 9px; background: var(--surface-solid, #fff); color: var(--text); font-family: var(--font, inherit); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; -webkit-appearance: none; appearance: textfield; transition: border-color .15s, box-shadow .15s; }
+.card.settings .set-row .scale-num:hover,
+.scale-num:hover { border-color: var(--accent); }
+.card.settings .set-row .scale-num:focus,
+.scale-num:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring, 0 0 0 3px rgba(47, 111, 168, .25)); }
+.scale-num::-webkit-outer-spin-button, .scale-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.scale-unit { color: var(--muted); font-weight: 600; font-size: 12.5px; }
 .set-preview { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 12px 4px; }
 .keys { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
 .key-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; border-radius: 9px; background: var(--surface-2); font-size: 12.5px; }

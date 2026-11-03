@@ -833,11 +833,22 @@
       c.fillText('线型：实线为地下，带白色中线为高架，带白色枕木纹为地面；⇄ 圆环为换乘站，虚线相连为站外步行换乘', cw - M0, ch - 38 * sc);
       c.fillText(isGeo ? '按游戏地图中的实际站点、轨道与地形等比例绘制；共线区间以同心色带区分，站外虚线只表示换乘联系。' : '站点按实际位置统一等比例缩放；同向线路并排，线形为简化示意，不显示地形。', cw - M0, ch - 20 * sc);
       c.textAlign = 'left';
+      var fileName = (isGeo ? '地铁地理线网图-' : '地铁线路示意图-') + (D.city || '城市') + '-' + g.clock.y + '年' + g.clock.m + '月.png';
       cv.toBlob(function (blob) {
         if (!blob) { ui.toast('导出失败：浏览器无法生成图片', 'bad'); return; }
+        if (CM.DESKTOP) {
+          blob.arrayBuffer().then(function (buffer) {
+            var bytes = new Uint8Array(buffer), binary = '', step = 8192, i;
+            for (i = 0; i < bytes.length; i += step) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+            return CM.DESKTOP.call('export', { text: btoa(binary), name: fileName, binary: true });
+          }).then(function (r) {
+            if (r && r.ok) ui.toast('已导出线路示意图（' + cv.width + '×' + cv.height + ' PNG）', 'good');
+          }, function () { ui.toast('导出失败：无法保存文件', 'bad'); });
+          return;
+        }
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = (isGeo ? '地铁地理线网图-' : '地铁线路示意图-') + (D.city || '城市') + '-' + g.clock.y + '年' + g.clock.m + '月.png';
+        a.download = fileName;
         document.body.appendChild(a); a.click();
         setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
         ui.toast('已导出线路示意图（' + cv.width + '×' + cv.height + ' PNG）', 'good');

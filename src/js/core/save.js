@@ -1,12 +1,60 @@
 'use strict';
-// 本地存档（无账号）：存档数据保存在浏览器 IndexedDB（容量大），不可用时退回 localStorage；
-// 存档索引保存在 localStorage。支持多进度、自动/手动存档、文件导入导出（格式、版本、校验和检查）。
+// 本地存档（无账号）：浏览器中存档数据保存在 IndexedDB（容量大），不可用时退回 localStorage；
+// 存档索引保存在 localStorage。桌面版由页面宿主（见 js/core/desk.js）直接读写本地文件。
+// 支持多进度、自动/手动存档、文件导入导出（格式、版本、校验和检查）。
 (function (CM) {
   const U = CM.U, CFG = CM.CFG;
   const P = CFG.saves.prefix;
   const IDX = P + 'index';
+  // 宿主的 window.pywebview 通常晚于本脚本注入，所以桌面版判定要在用到时再问，不能在这里定死。
+  // 宿主对象还没建好时，桌面标志本身也足以判定：这时只是接口暂时不可用，不该退回浏览器存储。
+  const DESK = function () { return (window.CM && CM.DESKTOP && (window.__CM_DESKTOP_ || window.pywebview)) ? CM.DESKTOP : null; };
+  // 已确认在桌面外壳里（用于「能不能存」这类必须同步回答的问题）
+  const ON_DESK = function () { return DESK() !== null; };
+  // 桌面宿主通过异步接口读写文件，因此索引改为内存副本 + 异步写入；
+  // 同步 API（列表、改名等）仍读内存，跨会话的一致性由 Save.init 的预载保证。
+  let memIndex = null, indexPending = 0, indexFlush = Promise.resolve();
 
   // ---------------- 存储后端 ----------------
+  // 桌面版：每个存档是一个独立文件，键名直接作为文件名；索引另存为 index.json。
+  const desk = {
+    call: function (body) { return DESK().call('store', body); },
+    put: function (key, str) {
+      return desk.call({ op: 'save', key: key, text: str, backup: true }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '写入存档文件失败');
+        return 'file';
+      });
+    },
+    get: function (key) {
+      return desk.call({ op: 'read', key: key }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '读取存档文件失败');
+        return r.text == null ? null : r.text;
+      });
+    },
+    del: function (key) {
+      return desk.call({ op: 'del', keys: [key] }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '删除存档文件失败');
+      });
+    },
+    indexInit: function () {
+      return desk.call({ op: 'index' }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '读取存档索引失败');
+        return r.text;
+      });
+    },
+    indexPut: function (text) {
+      return desk.call({ op: 'indexSave', text: text }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '写入存档索引失败');
+      });
+    },
+    rebuildIndex: function () {
+      return desk.call({ op: 'rebuild' }).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || '重建存档索引失败');
+        return r;
+      });
+    },
+  };
+
   let db = null, dbFailed = false, opening = null;
   function openDB() {
     if (db || dbFailed) return Promise.resolve(db);
@@ -44,15 +92,18 @@
   }
   const store = {
     put: function (key, str) {
+      if (DESK()) return desk.put(key, str);
       return idbOp('readwrite', function (st) { return st.put(str, key); }).then(function () { return 'idb'; })
         .catch(function (e) { if (db) throw e; localStorage.setItem(key, str); return 'ls'; });
     },
     get: function (key, where) {
+      if (DESK()) return desk.get(key);
       if (where === 'ls') return Promise.resolve(localStorage.getItem(key));
       return idbOp('readonly', function (st) { return st.get(key); })
         .then(function (v) { return v != null ? v : localStorage.getItem(key); }, function () { return localStorage.getItem(key); });
     },
     del: function (key, where) {
+      if (DESK()) return desk.del(key);
       try { localStorage.removeItem(key); } catch (e) { /* ignore */ }
       if (where === 'ls') return Promise.resolve();
       return idbOp('readwrite', function (st) { return st.delete(key); }).catch(function () { /* ignore */ });
@@ -60,21 +111,89 @@
   };
 
   function emptyIndex() { return { games: {}, slots: {} }; }
+  function checkIndex(o) {
+    const object = function (v) { return v && typeof v === 'object' && !Array.isArray(v); };
+    if (!object(o) || !object(o.games) || !object(o.slots) || !Object.values(o.games).every(object) || !Object.values(o.slots).every(object)) throw new Error('存档索引格式无效');
+    return o;
+  }
+  // 清单只加载一次，失败原因留着：桌面接口晚到或磁盘暂时读不到时，靠它给用户说清到底怎么了。
+  let indexError = '', indexLoad = null;
+  function parseIndexText(text) {
+    const info = { index: null, unreadable: [] };
+    if (text) { try { info.index = checkIndex(JSON.parse(text)); } catch (e) { info.unreadable.push('index.json'); } }
+    return info;
+  }
+  function pause(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
+  function loadIndexOnce() {
+    if (memIndex && !memIndex.broken) return Promise.resolve(memIndex);
+    if (indexLoad) return indexLoad;
+    const d = DESK();
+    if (!d) return Promise.resolve(null);
+    indexLoad = d.ready().then(function () {
+      return desk.indexInit();
+    }).then(function (text) {
+      const info = parseIndexText(text);
+      // 清单坏了要记住原因，但不能当成空清单继续覆盖写
+      if (!info.index) {
+        memIndex = info.unreadable.length
+          ? { games: {}, slots: {}, broken: '存档索引（index.json）已损坏，为避免覆盖原有记录，本次不改写存档列表；可用「修复存档索引」按存档文件重新登记' }
+          : emptyIndex();
+      } else {
+        memIndex = info.index;
+      }
+      indexError = '';
+      return memIndex;
+    });
+    indexLoad = indexLoad.then(function (r) { indexLoad = null; return r; }, function (e) { indexLoad = null; indexError = errMsg(e); throw e; });
+    return indexLoad;
+  }
+  // 任何写操作前都先确保清单在内存里：init 失败（宿主接口迟到、目录一时读不到）不该让存档功能一直瘫着。
+  function ensureIndex() {
+    if (!DESK()) return Promise.resolve(memIndex);
+    // 上次失败留下的占位清单要给它重试机会：宿主接口迟到时，失败不代表存档目录真的坏了。
+    if (memIndex && !memIndex.broken) return Promise.resolve(memIndex);
+    const attempt = function (left) {
+      return loadIndexOnce().catch(function (e) {
+        if (left <= 0) throw e;
+        return pause(150).then(function () { return attempt(left - 1); });
+      });
+    };
+    return attempt(6);
+  }
   function readIndex(strict) {
+    if (DESK()) {
+      if (!memIndex) {
+        if (!strict) return emptyIndex();
+        throw new Error(indexError ? '存档列表未能载入（' + indexError + '）' : '存档索引尚未载入，请稍候再试');
+      }
+      // 清单读坏了却当成空清单继续写，会把玩家的存档列表抹掉：这里一律停写。
+      if (memIndex.broken && strict) throw new Error(memIndex.broken);
+      return memIndex;
+    }
     try {
       const s = localStorage.getItem(IDX);
       if (!s) return emptyIndex();
-      const o = JSON.parse(s);
-      const object=function(v){return v&&typeof v==='object'&&!Array.isArray(v);};
-      if(!object(o)||!object(o.games)||!object(o.slots)||!Object.values(o.games).every(object)||!Object.values(o.slots).every(object))throw new Error('存档索引格式无效');
-      return o;
+      return checkIndex(JSON.parse(s));
     } catch (e) { if(strict)throw new Error('存档索引无法读取，已停止改写并保留原数据；请先导出当前进度作为备份。');return emptyIndex(); }
   }
-  function writeIndex(idx) { localStorage.setItem(IDX, JSON.stringify(idx)); }
+  function writeIndex(idx) {
+    if (!DESK()) { localStorage.setItem(IDX, JSON.stringify(idx)); return; }
+    memIndex = idx;
+    const text = JSON.stringify(idx);
+    // 上一次索引写入失败不能把这条链焊死：吞掉旧错误后照常写这一次，失败由 settle() 报给调用方。
+    indexFlush = indexFlush.catch(function () {}).then(function () { return desk.indexPut(text); });
+    indexPending++;
+    indexFlush.then(function () { indexPending--; }, function () { indexPending--; });
+  }
+  // 桌面版索引写入是异步的：把索引当作已提交结果返回之前先等它落盘
+  function settle() {
+    if (!DESK()) return Promise.resolve();
+    return indexFlush.then(function () {}, function () { throw new Error('存档索引写入失败（检查存档目录是否可写）'); });
+  }
   function errMsg(e) {
     if (!e) return '未知错误';
-    if (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014) return '浏览器本地存储空间不足（可删除旧存档或导出备份后清理）';
-    if (e.name === 'SecurityError') return '浏览器禁止本地存储（隐私模式或站点数据被阻止）';
+    if (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014) return '磁盘空间不足（可删除旧存档或导出备份后清理）';
+    if (e.name === 'SecurityError') return '无法访问存档目录（检查磁盘权限或安全软件）';
     return e.message || String(e);
   }
 
@@ -90,9 +209,90 @@
   function uniqueWriteId() { return U.uid('') + '-' + (++writeSeq).toString(36); }
   // 同一时钟刻度内也按写入顺序排序，确保自动轮换及「最近存档」正确。
   function savedAt(requested) { lastSavedAt = Math.max(Date.now(), requested || 0, lastSavedAt + 1); return lastSavedAt; }
-  Save.init = function () { return openDB(); };
-  Save.backend = function () { return db ? 'IndexedDB' : 'localStorage'; };
+  // 宿主的 window.pywebview 晚于页面脚本注入：init 可能先按浏览器版跑完，
+  // 桌面标志一出现就补载清单，列表、导入、导出才能切到文件接口。
+  function watchDesk() {
+    let tries = 0;
+    const tick = function () {
+      if (DESK()) {
+        if (memIndex && !memIndex.broken) return;
+        loadIndexOnce().then(function () {
+          if (!memIndex || memIndex.broken) return;
+          const info = CM.Save.state || {};
+          info.index = memIndex;
+          info.store = 'file';
+          info.dataDir = Save.dataDir();
+          info.failed = '';
+          CM.Save.state = info;
+          try { window.dispatchEvent(new CustomEvent('cm-saves-ready')); } catch (e) { /* ignore */ }
+        }, function () {});
+        return;
+      }
+      if (++tries > 140) return;
+      setTimeout(tick, 50);
+    };
+    window.addEventListener('pywebviewready', tick);
+    setTimeout(tick, 60);
+  }
+  Save.init = function () {
+    const d = DESK();
+    if (!d) {
+      watchDesk();
+      return openDB();
+    }
+    // 接口可能比桌面标志晚到：等宿主就绪，超时也按桌面版继续，绝不退回浏览器存储
+    return d.ready().then(function (boot) {
+      return ensureIndex().then(function () { return boot; }, function (e) {
+        // 清单读不到时先按存档文件重建（清单丢了不代表存档丢了），重建也失败才停下来并记住原因
+        return Save.rebuildIndex().then(function () { return boot; }, function (e2) {
+          indexError = errMsg(e) + '；' + errMsg(e2);
+          memIndex = { games: {}, slots: {}, broken: '无法读取存档目录（' + indexError + '）' };
+          return boot;
+        });
+      }).then(function (boot) {
+        const broken = !!(memIndex && memIndex.broken);
+        const info = { index: broken ? null : memIndex, repaired: [], recovered: [], unreadable: [], dataDir: d.dataDir, store: 'file' };
+        if (broken) { info.failed = memIndex.broken; info.unreadable.push('index.json'); }
+        if (boot && boot.storage) {
+          const s = boot.storage;
+          if (s.repaired) info.repaired = s.repaired;
+          if (s.recovered) info.recovered = s.recovered;
+          if (s.unreadable) info.unreadable = info.unreadable.concat(s.unreadable);
+        }
+        CM.Save.state = info;
+        return 'file';
+      });
+    });
+  };
+  Save.backend = function () { return DESK() ? 'file' : (db ? 'IndexedDB' : 'localStorage'); };
+  Save.isDesktop = function () { return ON_DESK(); };
+  Save.backendLabel = function () { return DESK() ? '本地文件' : (db ? '浏览器数据库' : '浏览器本地存储'); };
+  Save.dataDir = function () { const d = DESK(); return d ? d.dataDir : ''; };
+  Save.storageNote = function () {
+    const size = '全部存档约 ' + (Save.usage() / 1024 / 1024).toFixed(1) + ' MB。';
+    if (DESK()) {
+      return '游戏无需账号，进度以文件形式保存在此电脑的 ' + Save.dataDir() + ' 目录中，同目录的 index.json 记录存档列表。开启自动保存后，每月及建设完成时保存，在两个自动槽位间轮换。导出时由系统保存对话框选择位置；更换电脑可先导出再导入。' + size;
+    }
+    return '游戏无需账号，进度保存在当前浏览器、当前网址的站点数据（' + (db ? 'IndexedDB' : 'localStorage') + '）中，索引保存在 localStorage。开启自动保存后，每月及建设完成时保存，在两个自动槽位间轮换。导出文件的位置由浏览器下载设置或保存对话框决定。本地存档不跨网址、浏览器或设备同步；清除站点数据会删除存档，请提前导出备份，更换环境后再导入。' + size;
+  };
+  Save.flush = function () { return settle(); };
+  // 按存档文件重新登记清单：清单损坏或文件被外面挪动过时的最后手段
+  Save.rebuildIndex = function () {
+    const d = DESK();
+    if (!d || !d.rebuildIndex) return Promise.reject(new Error('当前环境不支持重建存档索引'));
+    return d.rebuildIndex().then(function (r) {
+      if (!r || !r.ok) throw new Error((r && r.error) || '重建存档索引失败');
+      const idx = checkIndex(r.index);
+      memIndex = idx;
+      if (!CM.Save.state) CM.Save.state = {};
+      CM.Save.state.index = idx;
+      CM.Save.state.failed = '';
+      return idx;
+    });
+  };
   Save.available = function () {
+    // 桌面版把存档写成文件：能保存与否不取决于清单有没有载入完，先载入中也不该报警。
+    if (ON_DESK()) return true;
     try { const k = P + '__t'; localStorage.setItem(k, '1'); localStorage.removeItem(k); return true; } catch (e) { return false; }
   };
   Save.envelope = function (game) {
@@ -104,13 +304,13 @@
     opts = Object.assign({}, opts);
     let env, trafficSnapshot, trafficKey;
     try { env = Save.envelope(game); } catch (e) { return Promise.resolve({ ok: false, error: '序列化失败：' + errMsg(e) }); }
-    if (CM.TrafficCache) { trafficSnapshot = CM.TrafficCache.capture(game); if (trafficSnapshot) trafficKey = CM.TrafficCache.keyFor(env.body); }
+    if (CM.TrafficCache) { trafficSnapshot = CM.TrafficCache.capture(game); if (trafficSnapshot) trafficKey = CM.TrafficCache.keyFor(env.body, env.checksum); }
     // 请求时即冻结快照及索引摘要；排队期间时间推进、切图或改名不改写本次快照。
     const snap = { id: game.id, name: game.name, mode: game.mode, map: game.mapId || 'gz', createdAt: game.createdAt,
       date: [game.clock.y, game.clock.m, game.clock.d], stations: game.compiled.stations.length, funds: game.econ.isFree() ? null : game.econ.funds };
     const pending = { gameId: snap.id, slotId: opts.slotId, cancelled: false, name: null };
     pendingWrites.add(pending);
-    return queueWrite(function () {
+    return ensureIndex().then(function () { return queueWrite(function () {
       if (pending.cancelled) return { ok: false, error: '该进度或存档已被删除，本次写入已取消' };
       const idx = readIndex(true); let slotId = opts.slotId;
       if (kind === 'auto') {
@@ -144,10 +344,10 @@
           try { writeIndex(idx2); }
           catch (e) { store.del(key, where); return { ok: false, error: errMsg(e) }; }
           if (old && old.key && old.key !== key) store.del(old.key, old.store);
-          return { ok: true, slotId: slotId, savedAt: env.savedAt, size: str.length };
+          return settle().then(function () { return { ok: true, slotId: slotId, savedAt: env.savedAt, size: str.length }; });
         });
       });
-    }).then(async function (result) {
+    }); }).then(async function (result) {
       if (trafficSnapshot) { if (result.ok) CM.TrafficCache.put(await trafficKey, trafficSnapshot); else CM.TrafficCache.discard(trafficSnapshot); }
       return result;
     }).catch(function (e) { if (trafficSnapshot) CM.TrafficCache.discard(trafficSnapshot); return { ok: false, error: errMsg(e) }; }).finally(function () { pendingWrites.delete(pending); });
@@ -203,16 +403,21 @@
     return { env: env, payload: payload };
   };
   function readSlotText(slotId) {
-    const meta = readIndex().slots[slotId];
-    if (!meta) return Promise.reject(new Error('存档不存在'));
-    return store.get(meta.key, meta.store).then(function (text) {
-      if (!text) throw new Error('存档数据丢失（浏览器数据可能已被清理）');
-      return { meta: meta, text: text };
+    return ensureIndex().then(function () {
+      const meta = readIndex().slots[slotId];
+      if (!meta) return Promise.reject(new Error('存档不存在'));
+      return store.get(meta.key, meta.store).then(function (text) {
+        if (!text) throw new Error('存档数据丢失（存档文件可能已被移走或删除）');
+        return { meta: meta, text: text };
+      });
     });
   }
   // 进度重命名保存在索引中，不重写每个历史快照；读取与导出时将最新名称应用到副本。
+  // 改名前先在 env 上留下原始校验和：交通缓存以存档文件的原文校验和为键（见 TrafficCache.keyFor），
+  // 直接拿改名重算后的校验和会把重命名过的存档的缓存全部对不上，每次读档都要重新求解全部时段。
   function parseSlot(r) {
     const parsed = Save.parseEnvelope(r.text);
+    parsed.rawChecksum = parsed.env.checksum;
     if (typeof r.meta.name === 'string' && parsed.payload.meta.name !== r.meta.name) {
       parsed.payload.meta.name = r.meta.name;
       parsed.env.body = JSON.stringify(parsed.payload);
@@ -232,21 +437,22 @@
       const rulesUpgrade = (p.rulesRevision || 0) < (CFG.RULES_REVISION || 0);
       if (tv >= (CFG.TRAFFIC_MODEL || 1) && !rulesUpgrade && !p.__mapMigratedFrom && !terrainUpgrade && !displayUpgrade) {
         if (!CM.TrafficCache) return p;
-        return CM.TrafficCache.keyFor(parsed.env.body).then(async function (key) {
+        return CM.TrafficCache.keyFor(parsed.env.body, parsed.rawChecksum).then(async function (key) {
           Object.defineProperty(p, '__trafficKey', { value: key });
           Object.defineProperty(p, '__trafficState', { value: await CM.TrafficCache.get(key) });
           return p;
         });
       }
       if (r.meta.kind === 'backup') return p;
-      return Save.backupBeforeUpgrade(r, p).then(function (res) {
+      // 已解析过的信封直接复用（改名过的存档 body 已被重写过，那份按原文件重新解析，避免备份比对口径不一致）
+      return Save.backupBeforeUpgrade(r, p, parsed.rawChecksum === parsed.env.checksum ? parsed.env : null).then(function (res) {
         if (res.ok) p.__backupSlot = res.slotId; else p.__backupFailed = res.error || '未知错误';
         return p;
       });
     });
   };
-  Save.backupBeforeUpgrade = function (r, payload) {
-    let env = null; try { env = Save.parseEnvelope(r.text).env; } catch (e) { return Promise.resolve({ ok: false, error: '原存档校验失败：' + errMsg(e) }); }
+  Save.backupBeforeUpgrade = function (r, payload, env0) {
+    let env = env0 || null; if (!env) { try { env = Save.parseEnvelope(r.text).env; } catch (e) { return Promise.resolve({ ok: false, error: '原存档校验失败：' + errMsg(e) }); } }
     const meta = r.meta, from = (payload.meta && payload.meta.gameVersion) || env.gameVersion || '1.8.0';
     const slotId = meta.gameId + '.bk' + String(env.savedAt || meta.savedAt || 0);
     return queueWrite(async function () {
@@ -270,7 +476,7 @@
           try { writeIndex(idx2); } catch (e) { store.del(key, where); return { ok: false, error: errMsg(e) }; }
           // 新副本及索引提交后才清理旧备份；不删除原档或其他槽仍引用的数据。
           if (old && old.kind === 'backup' && old.gameId === meta.gameId && old.key !== meta.key && old.key !== key && !Object.values(idx2.slots).some(function (s) { return s.key === old.key; })) store.del(old.key, old.store);
-          return { ok: true, slotId: slotId, repaired: !!old };
+          return settle().then(function () { return { ok: true, slotId: slotId, repaired: !!old }; });
         });
       });
     }).catch(function (e) { return { ok: false, error: errMsg(e) }; });
@@ -305,13 +511,25 @@
     const d = meta.date || [0, 0];
     return '城市与地铁_' + (meta.name || '存档').replace(/[\\/:*?"<>|]/g, '_') + '_' + d[0] + '年' + d[1] + '月.cmsave.json';
   };
+  // 桌面版写入的是本地文件：文件名即存档键，导出时由宿主弹出保存对话框
   Save.download = function (text, filename) {
+    const fail = function () { CM.U && CM.U.toast && CM.U.toast('导出失败：无法保存文件'); };
+    const d = DESK();
+    if (d && d.exportFile) {
+      return d.exportFile(text, filename).then(function (r) {
+        if (r && r.ok) return true;
+        if (r && r.cancelled) return false;
+        fail();
+        return false;
+      }, fail);
+    }
     const blob = new Blob([text], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = filename;
     document.body.appendChild(a); a.click();
     setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1000);
+    return Promise.resolve(true);
   };
   Save.exportSlot = function (slotId) {
     return readSlotText(slotId).then(function (r) {
@@ -319,19 +537,18 @@
       // 导出是救援入口：地图 / 格式不兼容或校验失败时仍能取出原始文本，不迁移、不改写存储。
       // 可正常读取的存档沿用最新进度名称；其他存档逐字导出，不表示其已经可载入。
       try { text = JSON.stringify(parseSlot(r).env); } catch (e) { raw = true; }
-      Save.download(text, Save.fileName(r.meta));
-      return { raw: raw };
+      return Save.download(text, Save.fileName(r.meta)).then(function (ok) { return { raw: raw, saved: ok }; });
     });
   };
   Save.exportGame = function (game) {
     const env = Save.envelope(game);
-    Save.download(JSON.stringify(env), Save.fileName({ name: game.name, date: [game.clock.y, game.clock.m] }));
+    return Save.download(JSON.stringify(env), Save.fileName({ name: game.name, date: [game.clock.y, game.clock.m] }));
   };
   // 导入：校验通过后作为新的手动存档保存，不覆盖已有进度。返回 Promise
   Save.importText = function (text) {
     let r;
     try { r = Save.parseEnvelope(text); } catch (e) { return Promise.reject(e); }
-    return queueWrite(function () {
+    return ensureIndex().then(function () { return queueWrite(function () {
       const idx = readIndex(true);
       const p = r.payload;
       delete p.__mapMigratedFrom;   // 导入即为新副本（原文件仍在玩家手中），不再另建升级前备份；迁移结果随副本保存
@@ -348,14 +565,50 @@
         idx2.games[gameId] = { gameId: gameId, name: name, mode: p.meta.mode, map: p.meta.map || 'gz', createdAt: p.meta.createdAt, updatedAt: env.savedAt };
         idx2.slots[slotId] = { slotId: slotId, key: key, store: where, gameId: gameId, kind: 'manual', label: '导入的存档', date: [p.clock.y, p.clock.m, p.clock.d], savedAt: env.savedAt, size: str.length, mode: p.meta.mode, map: p.meta.map || 'gz', name: name, stations: Object.keys(p.net.stations || {}).length, funds: p.econ.mode === 'free' ? null : p.econ.funds };
         try { writeIndex(idx2); } catch (e) { store.del(key, where); throw new Error(errMsg(e)); }
-        return { slotId: slotId, gameId: gameId, name: name, map: p.meta.map || 'gz' };
+        return settle().then(function () { return { slotId: slotId, gameId: gameId, name: name, map: p.meta.map || 'gz' }; });
       }, function (e) { throw new Error(errMsg(e)); });
-    });
+    }); });
   };
   Save.usage = function () {
     let n = 0;
     for (const s of Object.values(readIndex().slots)) n += s.size || 0;
     return n;
+  };
+  // 桌面版：直接选取本地存档文件导入（浏览器版由页面的 <input type=file> 提供）
+  Save.pickImport = function () {
+    const d = DESK();
+    if (!d || !d.importFile) return Promise.resolve(null);
+    return d.importFile().then(function (r) {
+      if (r && r.ok && typeof r.text === 'string') return { text: r.text, name: r.path };
+      if (r && r.error) throw new Error(r.error);
+      return null;
+    });
+  };
+  // 未保存进度可能因为关闭、崩溃或断电丢失：页面把当前进度压成快照交给宿主留底，下次启动时可再取回。
+  Save.crashSave = function (game) {
+    const d = DESK();
+    if (!d || !d.snapshot) return Promise.resolve(false);
+    let text;
+    try { text = JSON.stringify(Save.envelope(game)); } catch (e) { return Promise.resolve(false); }
+    return d.snapshot({ gameId: game.id, name: game.name, map: game.mapId || 'gz', text: text });
+  };
+  Save.recoverList = function () {
+    const d = DESK();
+    if (!d || !d.ready) return Promise.resolve([]);
+    return d.ready().then(function (boot) { return (boot && boot.recovered) || []; });
+  };
+  Save.recoverLoad = function (name) {
+    const d = DESK();
+    if (!d || !d.recoverRead) return Promise.reject(new Error('当前环境不支持恢复'));
+    return d.recoverRead(name).then(function (r) {
+      if (!r || typeof r.text !== 'string') throw new Error('恢复文件已不存在');
+      return { text: r.text };
+    });
+  };
+  Save.recoverDrop = function (name) {
+    const d = DESK();
+    if (!d || !d.recoverDrop) return Promise.resolve();
+    return d.recoverDrop(name).then(function () {}, function () {});
   };
   CM.Save = Save;
 })(window.CM);

@@ -132,7 +132,7 @@
   }
   const CAR_DEPTH = 2;
   const CarPool = {
-    gseq: 0, rseq: 0, list: null, off: false, queue: [], reqs: new Map(), onReq: null,
+    gseq: 0, rseq: 0, list: null, off: false, queue: [], reqs: new Map(), onReq: null, onBlock: null,
     size: function () { return workerPlan().road; },
     ready: function () {
       if (this.off) return false;
@@ -189,6 +189,21 @@
         if (self.onReq) { try { self.onReq(); } catch (e) { if (typeof console !== 'undefined') console.error(e); } }
       });
     },
+    // 单块完成：预先排好的下一轮只等这一块就够了，不必按毫秒轮询
+    notifyBlock: function () {
+      if (!this.onBlock || this.blocking) return;
+      this.blocking = true;
+      const self = this;
+      Promise.resolve().then(function () {
+        self.blocking = false;
+        if (self.onBlock) { try { self.onBlock(); } catch (e) { if (typeof console !== 'undefined') console.error(e); } }
+      });
+    },
+    // 取消等待方：载入结束/放弃时两路唤醒都要摘干净
+    clearHooks: function (fn) {
+      if (this.onReq === fn) this.onReq = null;
+      if (this.onBlock === fn) this.onBlock = null;
+    },
     // 提交一次分配：blocks 为 [{ origins, dem }]；alive() 为假时（求解已被放弃）尚未发出的块直接丢弃
     submit: function (G, time, blocks, alive) {
       const req = { id: ++this.rseq, G: G, time: Float32Array.from(time), res: new Array(blocks.length), remaining: 0, failed: false, alive: alive };
@@ -228,7 +243,7 @@
         else if (req.failed) fin = true;
       }
       this.pump();
-      if (fin) this.notify();
+      if (fin) this.notify(); else this.notifyBlock();
     },
   };
   CM.CarPool = CarPool;
@@ -763,8 +778,7 @@
     }
   };
   Model.prototype.buildDemand = function () {
-    const g = this.buildDemandGen();
-    while (!g.next().done) { /* run */ }
+    this.buildDemandGen().next();
   };
   // 每人每日的出行率（来回各一次计为一次往返）：通勤、上学、购物、医疗、休闲
   Model.prototype.tripRates = function (y) {
@@ -1226,22 +1240,47 @@
       });
     }
   };
-  // 设置正式运营网络
+  // 设置正式运营网络。网络建好后逐时段分配客流数组并重建接驳状态，
+  // 这部分在有大线网时要分配几十 MB，同步做完会顶住一帧，所以按 dt 让出（见 applyNetworkGen）。
+  // 同步入口保持原语义：这里直接把生成器排干，调用方不必改。
   Model.prototype.setNetwork = function (C, keepState) {
     this.wake(keepState ? 1 : 4);
+    this.prepareNetwork(C, keepState);
+    const g = this.applyNetworkGen();
+    while (!g.next().done) { /* 排干：同步调用方拿到的仍是完全就绪的模型 */ }
+  };
+  // 建网与后续的分时段分配拆开：buildMetro 里含全站步行 Dijkstra，无法再切；
+  // 之后的 8 个时段分配可以跨帧做，读档时由 restoreGen 走 yield* applyNetworkGen。
+  Model.prototype.prepareNetwork = function (C, keepState) {
     const oldNet = this.net;
     const net = this.buildMetro(C);
     if(!oldNet||oldNet.N!==net.N||oldNet.R!==net.R||oldNet.nE!==net.nE)this.results=null;
     if (oldNet && (oldNet.N !== net.N || oldNet.nE !== net.nE || oldNet.nNodes !== net.nNodes)) { this.liveBuf = {}; this.predBuf = {}; this.pipeBufs = null; this.predBufs = null; }
-    for (const dt of DT) for (let p = 0; p < this.ctxs[dt].per.length; p++) {
-      const P = this.ctxs[dt].per[p], old = { freq: P.freq, load: P.load, crowd: P.crowd, stIn: P.stIn, stOut: P.stOut, stXfer: P.stXfer, stBoard: P.stBoard, stDelay: P.stDelay };
-      this.initMetroPer(P, net, p, old, oldNet);
+    this.netPending = { net: net, oldNet: oldNet, keepState: keepState };
+  };
+  // 读档等异步路径用：建网（同步，含全站步行 Dijkstra，无法再切）后按 dt 让出分配客流数组。
+  Model.prototype.prepareNetworkGen = function* (C, keepState) {
+    this.wake(keepState ? 1 : 4);
+    this.prepareNetwork(C, keepState);
+    yield* this.applyNetworkGen();
+  };
+  Model.prototype.applyNetworkGen = function* () {
+    const job = this.netPending;
+    if (!job) return;
+    const net = job.net, oldNet = job.oldNet;
+    for (const dt of DT) {
+      for (let p = 0; p < this.ctxs[dt].per.length; p++) {
+        const P = this.ctxs[dt].per[p], old = { freq: P.freq, load: P.load, crowd: P.crowd, stIn: P.stIn, stOut: P.stOut, stXfer: P.stXfer, stBoard: P.stBoard, stDelay: P.stDelay };
+        this.initMetroPer(P, net, p, old, oldNet);
+      }
+      yield;
     }
+    this.netPending = null;
     this.net = net;
     this.live=this.resultsFor(this.dayType);
     this.gen = null;
     // 车站日客流（stDaily）按旧网络统计，到下一次 computeDaily 前与新网络的车站编号不对应
-    if (!keepState || !this.stDaily || this.stDaily.inn.length !== net.N) this.dailyStale = true;
+    if (!job.keepState || !this.stDaily || this.stDaily.inn.length !== net.N) this.dailyStale = true;
     this.version++;
   };
 
@@ -1274,9 +1313,12 @@
     if(same){store.valid=true;return;}
     // 中途取消的生成器不能把只完成一部分的最短路当成有效缓存。
     store.valid=false;
+    let sliceStart=performance.now();
     for (let s = 0; s < N; s++) {
       metroTree(net, cost, tAct, s, work, store, this.heap, prm.tpen);
-      if ((s & 3) === 3) yield;
+      // 按时间切片让出：每 4 站一次在几百个小区时会退化成每几微秒一次宏任务往返，
+      // 调度开销比计算本身还大；改成每片约 2ms 让出一次，既保住响应性又减少上百次往返。
+      if (performance.now() - sliceStart >= 2) { sliceStart = performance.now(); yield; }
     }
     store.skimKey=key;store.transferPen=prm.tpen;store.valid=true;
   };
@@ -1511,6 +1553,11 @@
     P.stats = st;
     P.facKey = fn.key;   // 数组下标只属于本次迭代使用的设施表，不能按新的设施顺序解读。
     P.stable=P.quiet>=3;
+    // 汽车最短路矩阵（skimT/skimK）只在路网 / 需求结构 / 票价 / 线网真正变化时重算。
+    // 月度城市增长改变的是需求量，不改变行程结构，沿用上一份结果即可；
+    // 连续复用次数有上限，攒够了再重算一次，避免旧行程长期偏离实际拥堵。
+    if(fullSkim){P.skimSig=this.skimState();P.skimReuse=0;}
+    else if(opts.skimWanted&&this.skimMatch(P))P.skimReuse=(P.skimReuse||0)+1;
   };
 
   // ---------------- 时段流水线（v2.1） ----------------
@@ -1547,6 +1594,12 @@
   // Lightweight updates: fixed, deterministic round budgets. Strict stability remains
   // a separate property for threshold-sensitive tasks; it never blocks ordinary months.
   Model.prototype.periodCurrent=function(P){const s=P.solveSignature;return !!s&&s.net===this.net&&s.od===this.od&&s.year===this.year&&s.fare===Model.fareKey(this.fare)&&s.road===this.roadVer;};
+  // 行程矩阵（各时段的汽车最短路）只在「谁和谁之间怎么走」变化时重算：线网、需求分区、路网版本、票价。
+  // 年份与城市版本只影响需求量与系数，沿用旧行程结果即可（与交通缓存对 year / city 变化的复用口径一致）。
+  const SKIM_REUSE_MAX=2;
+  Model.prototype.skimState=function(){return {net:this.net,od:this.od,road:this.roadVer,fare:Model.fareKey(this.fare)};};
+  Model.prototype.skimMatch=function(P){const s=P.skimSig;return !!s&&s.net===this.net&&s.od===this.od&&s.road===this.roadVer&&s.fare===Model.fareKey(this.fare);};
+  Model.prototype.skimUsable=function(P){return this.skimMatch(P)&&(P.skimReuse||0)<SKIM_REUSE_MAX;};
   Model.prototype.periodUsable=function(P){return this.periodCurrent(P)&&P.solveSteps>=1&&!!P.stats&&P.facKey===this.fn.key;};
   Model.prototype.needsWork=function(P,limit){return !this.periodCurrent(P)||(!P.stable&&(P.solveSteps||0)<limit);};
   Model.prototype.trafficReady=function(){return !this.refreshing&&!this.solving&&!!this.results&&DT.every(dt=>this.ctxs[dt].per.every(P=>this.periodUsable(P)));};
@@ -1571,7 +1624,7 @@
       const order=this.dayType==='we'?['we','wd']:['wd','we'],jobs=[];
       for(const dt of order)for(let p=0;p<NP;p++){const P=this.ctxs[dt].per[p],limit=Math.max(this.solveLimit||2,this.periodCurrent(P)?P.reviewLimit||0:0);if(this.needsWork(P,limit))jobs.push([dt,p]);}
       if(!jobs.length){this.finishTraffic();return;}
-      yield* this.pipeline(jobs,(j,buf)=>self.iterate(self.net,self.ctxs[j[0]].per[j[1]],j[1],{fullSkim:!self.periodCurrent(self.ctxs[j[0]].per[j[1]]),noSmooth:true,buf}));
+      yield* this.pipeline(jobs,(j,buf)=>self.iterate(self.net,self.ctxs[j[0]].per[j[1]],j[1],{fullSkim:!self.skimUsable(self.ctxs[j[0]].per[j[1]]),skimWanted:true,noSmooth:true,buf}));
       this.cycles++;this.computeDaily();if(this.reviewObserver)this.reviewObserver();yield;
     }
   };
@@ -1607,12 +1660,14 @@
       for(let c=0;c<cycles;c++){
         const jobs=[];for(const dt of dts)for(let p=0;p<NP;p++)if(this.needsWork(this.ctxs[dt].per[p],cycles))jobs.push([dt,p]);
         if(!jobs.length)break;
-        yield* this.pipeline(jobs,(j,buf)=>self.iterate(self.net,self.ctxs[j[0]].per[j[1]],j[1],{fullSkim:c===0,buf,noSmooth:true}));
+        yield* this.pipeline(jobs,(j,buf)=>self.iterate(self.net,self.ctxs[j[0]].per[j[1]],j[1],{fullSkim:c===0&&!self.skimUsable(self.ctxs[j[0]].per[j[1]]),skimWanted:c===0,buf,noSmooth:true}));
         this.cycles++;
         if(this.onSolveProgress)this.onSolveProgress((c+1)/cycles);   // 载入界面的进度（每完成一轮）
         if(this.solveLimit<=1)break;   // 只要求一轮（普通月份）时不额外判断，保持原有节奏
+        // 各时段误差之和不再明显下降就收手：阈值按误差本身的量级取（各项是相对误差，收敛时在 1e-3 上下），
+        // 用绝对小量会让判定几乎永远为「还在改善」，四轮白跑。
         const now=[];for(const dt of dts)for(let p=0;p<NP;p++){const e=this.ctxs[dt].per[p].error;if(e)now.push(e.time+e.gap+e.metro+e.demand);}
-        if(prev&&now.length===prev.length){let imp=0;for(let i=0;i<now.length;i++)if(prev[i]-now[i]>1e-4)imp++;if(!imp)break;}
+        if(prev&&now.length===prev.length){let imp=0;for(let i=0;i<now.length;i++)if(prev[i]-now[i]>Math.max(1e-3,prev[i]*0.1))imp++;if(!imp)break;}
         prev=now;
       }
       if(DT.every(dt=>this.ctxs[dt].per.every(P=>this.periodUsable(P))))this.finishTraffic();else{this.computeDaily();this.gen=null;}

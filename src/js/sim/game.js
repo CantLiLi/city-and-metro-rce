@@ -680,7 +680,7 @@
       if (CM.applyMoneyEra) CM.applyMoneyEra(g.clock.y, g.clock.m);
       g.city = new CM.City();
       lp(0.06, '恢复城市');
-      g.city.generate(g.seed, CFG.START.y, { deferGraphs: true });
+      g.city.generate(g.seed, CFG.START.y, { deferGraphs: true, restore: true });
       g.city.restore(s.city, g.clock.y);
       lp(0.3, '恢复道路与用地');
       // 交通模型版本：1.8 及更早的存档为 1（典型工作日、通勤与其他两类出行），载入时升级到当前模型
@@ -695,10 +695,10 @@
       g.model = new CM.Model(g.city, { deferDemand: true });
       g.model.setYear(g.clock.y + (g.clock.m - 1) / 12);
       g.model.setDayType(CM.Model.dayType(g.clock.y, g.clock.m, g.clock.d));
-      g.model.buildZones(); g.model.buildDemand();
+      g.model.buildZones(); yield* g.model.buildDemandGen();
       g.net = s.net;
       g.compiled = M.compile(g.net, g.city);
-      g.model.setNetwork(g.compiled);
+      yield* g.model.prepareNetworkGen(g.compiled);
       g.econ = CM.Economy.restore(s.econ);
       g.model.fare = g.econ.fare;
       g.tasks = CM.Tasks.restore(s.tasks);

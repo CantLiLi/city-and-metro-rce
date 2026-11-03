@@ -1671,7 +1671,8 @@
       narrowItem(document.documentElement.dataset.theme === 'dark' ? 'sun' : 'moon', document.documentElement.dataset.theme === 'dark' ? '浅色模式' : '深色模式', function () { self.toggleTheme(); }),
       narrowItem('gear', '设置', function () { self.showSettings(); }),
       h('hr'),
-      item('home', '返回主菜单', function () { self.backToMenu(); }));
+      item('home', '返回主菜单', function () { self.backToMenu(); }),
+      item('power', '退出游戏', function () { self.quitGame(); }));
     document.body.appendChild(dd);
     this.dropdown = dd;
     // 矮窗口内保留菜单自身的滚动区域；窗口或界面缩放后重新跟随菜单按钮定位。
@@ -1890,25 +1891,60 @@
     if (CM.Quick) CM.Quick.hide();
     if (this.tools) this.tools.cancelDrag();
     // 载入背景（#stagebg）常驻在界面层里，切换界面时保留
+    clearTimeout(this._scrOutT); this._scrOutT = null;
+    if (this._scrLeaveT) { clearTimeout(this._scrLeaveT); this._scrLeaveT = null; }
+    this._scrLeaving = false;
     const sc = this.screen, bg = this._stageBg, kids = Array.from(sc.childNodes).filter(function (n) { return n !== bg; });
-    const live = tr && sc.className.indexOf('hidden') < 0 && kids.length && !CM.Settings.reducedMotion();
-    if (live) {
-      const old = document.createElement('div'), cs = getComputedStyle(sc);
-      old.className = 'scr-out scr-' + tr; old.style.placeItems = cs.placeItems; old.setAttribute('aria-hidden', 'true');
-      for (const n of kids) { if (n.classList && n.classList.contains('scr-out')) n.remove(); else old.appendChild(n); }
-      sc.className = (cls || '') + ' scr-in-' + tr;
-      sc.appendChild(old); sc.appendChild(card);
-      clearTimeout(this._scrT);
-      this._scrT = setTimeout(function () { old.remove(); sc.classList.remove('scr-in-' + tr); }, 420);
-    } else {
-      for (const n of kids) n.remove();
-      sc.className = cls || '';
+    // 主页之上打开卡片：主页原样留在底层作为平面 A，卡片以覆盖层叠在上面（平面 B），关闭后主页仍在
+    const sheet = (cls || '').indexOf('start') < 0;
+    const onStart = sheet && sc.className.indexOf('start') >= 0 && kids.length && !CM.Settings.reducedMotion();
+    if (onStart) {
+      // 已存在的覆盖层先移除，避免重复叠加；真正的平面 A（主页内容）保留
+      for (const n of kids) { if (n.classList && n.classList.contains('scr-sheet')) n.remove(); }
+      sc.className = 'start' + (cls ? ' ' + cls : '');
+      if (!card.classList.contains('scr-sheet')) card.classList.add('scr-sheet');
       sc.appendChild(card);
+    } else {
+      const live = tr && sc.className.indexOf('hidden') < 0 && kids.length && !CM.Settings.reducedMotion();
+      if (live) {
+        const old = document.createElement('div'), cs = getComputedStyle(sc);
+        old.className = 'scr-out scr-' + tr; old.style.placeItems = cs.placeItems; old.setAttribute('aria-hidden', 'true');
+        for (const n of kids) { if (n.classList && n.classList.contains('scr-out')) n.remove(); else old.appendChild(n); }
+        sc.className = (cls || '') + ' scr-in-' + tr;
+        sc.appendChild(old); sc.appendChild(card);
+        clearTimeout(this._scrT);
+        this._scrT = setTimeout(function () { old.remove(); sc.classList.remove('scr-in-' + tr); }, 420);
+      } else {
+        for (const n of kids) n.remove();
+        sc.className = cls || '';
+        sc.appendChild(card);
+      }
     }
     if (!/\bld-screen\b/.test(cls || '')) { this._ld = null; this.stageBg(null); }
     this.screenEsc = onEsc || null;
+    this.bindScreenOutside(card);
   };
-  UI.prototype.closeScreen = function () { if (this._keyCap) this._keyCap(); this._ld = null; this.screen.className = 'hidden'; this.screenEsc = null; this.screenRefresh = null; this.stageBg(null); };
+  // 点击卡片外的空白处关闭界面：等同于按 Esc，只在卡片可见且未处于解析中状态时生效
+  UI.prototype.bindScreenOutside = function (card) {
+    const self = this;
+    if (this._scrOutside) { this.screen.removeEventListener('pointerdown', this._scrOutside, true); this._scrOutside = null; }
+    const closeable = !!(this.screenEsc && card && !/\b(ld-screen|start)\b/.test(this.screen.className) && this.screen.className.indexOf('hidden') < 0);
+    if (!closeable) return;
+    this._scrOutside = function (e) {
+      if (!self.screenEsc || self.screen.className.indexOf('hidden') >= 0) return;
+      if (card.contains(e.target)) return;
+      if (e.target.closest && e.target.closest('.scr-out, #stagebg')) return;
+      if (self._scrLeaving) return;
+      const go = self.screenEsc;
+      if (CM.Settings.reducedMotion()) { go(); return; }
+      // 点击空白处：卡片先淡出，再执行原 Esc 的收尾逻辑
+      self._scrLeaving = true;
+      card.classList.add('scr-dismiss');
+      self._scrLeaveT = setTimeout(function () { self._scrLeaveT = null; self._scrLeaving = false; go(); }, 180);
+    };
+    this.screen.addEventListener('pointerdown', this._scrOutside, true);
+  };
+  UI.prototype.closeScreen = function () { if (this._keyCap) this._keyCap(); if (this._scrLeaveT) { clearTimeout(this._scrLeaveT); this._scrLeaveT = null; } this._scrLeaving = false; if (this._scrOutside) { this.screen.removeEventListener('pointerdown', this._scrOutside, true); this._scrOutside = null; } this._ld = null; this.screen.className = 'hidden'; this.screenEsc = null; this.screenRefresh = null; this.stageBg(null); };
   // 载入背景（v2.2）：所选城市的地图画面铺满全屏（模糊、提亮），载入卡片浮在上面；from 为选择地图里地图画面的位置，
   // 给出时由该处放大到全屏，否则直接淡入。src 为 null 时淡出
   UI.prototype.stageBg = function (src, from) {
@@ -1944,16 +1980,43 @@
     const prev = prevCls.indexOf('hidden') >= 0 ? null : Array.from(this.screen.childNodes);
     const prevEsc = this.screenEsc;
     // 取消时原样放回上一个界面（不重播入场动画，避免闪动）
-    const restore = function () { if (prev) { self.screen.innerHTML = ''; self.screen.className = prevCls + ' noanim'; prev.forEach(function (n) { self.screen.appendChild(n); }); self.screenEsc = prevEsc; } else self.closeScreen(); };
+    const restore = function () { if (prev) { self.screen.innerHTML = ''; self.screen.className = prevCls + ' noanim'; prev.forEach(function (n) { self.screen.appendChild(n); }); self.screenEsc = prevEsc; self.bindScreenOutside(prev.find(function (n) { return n.classList && n.classList.contains('card'); })); } else self.closeScreen(); };
     const card = h('div', { class: 'card' }, this.cardHead(icon || (danger ? 'warn' : 'help'), danger ? 'b-red' : 'b-blue', title), h('div', { class: 'note', style: { fontSize: '13px' } }, text),
       h('div', { class: 'modal-actions' }, h('button', { class: 'btn', onclick: restore }, '取消'), h('button', { class: 'btn ' + (danger ? 'danger fill' : 'primary'), onclick: function () { restore(); onOk(); } }, okLabel)));
     this.openScreen(card, restore);
   };
   // 开始界面、选择地图、开局简报与更新公告见 screens.js
-  // 退出：网页无法强制关闭自己打开的标签页时，给出提示
+  // 退出：桌面版交给宿主关窗口（页面自己 window.close() 在 WebView 里无效）
   UI.prototype.quitGame = function () {
     const self = this;
-    this.confirm('退出游戏？', '进度已自动保存在本浏览器中，下次打开 index.html 可点击「继续游戏」。', '退出', function () {
+    const desk = (CM.DESKTOP && (window.__CM_DESKTOP_ || window.pywebview)) ? CM.DESKTOP : null;
+    // 直接关窗口会与存档赛跑：先暂停，把最新进度写盘，再让宿主关窗
+    const g = this.g();
+    if (desk && g && !this.isSaved()) {
+      const leave = function () { self.confirm('退出游戏？', '进度已保存在本机，下次打开可点击「继续游戏」。', '退出', function () { desk.quit().catch(function () { desk.window('close', { allow: true }); }); }, false, 'power'); };
+      if (g.speed > 0) this.setSpeed(0);
+      this.showLoading('正在保存并退出…');
+      this.doAutosave(true).then(function (r) {
+        if (self.g() !== g) return;
+        if (r && r.ok && self.isSaved()) { self.closeScreen(); leave(); return; }
+        self.closeScreen();
+        self.openScreen(h('div', { class: 'card' }, self.cardHead('error', 'b-red', '退出前保存失败，窗口已保留'),
+          self.callout('bad', 'error', (r && r.error) || '当前进度未能保存。'),
+          h('div', { class: 'note' }, '当前游戏仍保留在内存中。可以重试，或先「导出当前进度」作为备份。'),
+          h('div', { class: 'modal-actions' },
+            h('button', { class: 'btn danger', onclick: function () { self.closeScreen(); desk.quit().catch(function () {}); } }, '不保存，直接退出'),
+            h('button', { class: 'btn', onclick: function () { self.closeScreen(); } }, '留在游戏'),
+            h('button', { class: 'btn primary', onclick: function () { self.closeScreen(); self.quitGame(); } }, '重试保存'))));
+      }, function () { self.closeScreen(); });
+      return;
+    }
+    const text = desk ? '进度已保存在本机，下次打开可点击「继续游戏」。'
+      : '进度已自动保存在本浏览器中，下次打开 index.html 可点击「继续游戏」。';
+    this.confirm('退出游戏？', text, '退出', function () {
+      if (desk) {
+        desk.quit().catch(function () { desk.window('close', { allow: true }); });
+        return;
+      }
       try { window.close(); } catch (e) { /* ignore */ }
       setTimeout(function () { if (!window.closed) self.openScreen(h('div', { class: 'card', style: { width: 'min(420px, calc(100vw - 32px))', textAlign: 'center' } }, h('img', { class: 'logo-ink', src: 'img/logo-navy.png', alt: '', style: { width: '72px', margin: '6px auto 12px', display: 'block' } }), h('h2', { style: { justifyContent: 'center' } }, '感谢游玩'), h('div', { class: 'note' }, '浏览器不允许网页自行关闭此标签页，请直接关闭它。'), h('div', { class: 'modal-actions', style: { justifyContent: 'center' } }, h('button', { class: 'btn primary', onclick: function () { self.showStart(); } }, '返回主菜单'))), function () { self.showStart(); }); }, 120);
     }, false, 'power');
@@ -1965,6 +2028,9 @@
   UI.prototype.showSettings = function (tab) {
     const self = this, S = CM.Settings;
     const inGame = !!this.g();
+    // 界面大小：打开设置时记下已生效的倍率，点「完成」才保留，其它方式关闭则还原
+    const baseScale = S.get('uiScale') || 1;
+    const restoreScale = function () { if (S.get('uiScale') !== baseScale) S.set('uiScale', baseScale); };
     const back = function () { if (self._keyCap) self._keyCap(); if (inGame) self.closeScreen(); else self.showStart(); };
     let cur = SET_TABS.some(function (t) { return t[0] === tab; }) ? tab : (this._setTab || 'display');
     const row = function (icon, title, ctl, desc) { return h('div', { class: 'set-row' }, h('span', { class: 'set-ico' }, ic(icon)), h('div', { class: 'grow' }, h('div', { class: 'set-t' }, title), desc ? h('div', { class: 'set-d' }, desc) : null), ctl); };
@@ -1979,7 +2045,6 @@
       const btns = opts.map(function (o) {
         return h('button', { class: S.get(key) === o[0] ? 'on' : '', 'data-silent': '1', onclick: function () {
           if (S.get(key) === o[0]) return;
-          if (key === 'uiScale' && !S.reducedMotion()) document.getElementById('app').animate([{ opacity: 0.25 }, { opacity: 1 }], { duration: 380, easing: 'ease-out' });
           S.set(key, o[0]); snd('soft');
           btns.forEach(function (b, k) { b.classList.toggle('on', opts[k][0] === o[0]); });
           if (after) after();
@@ -1998,14 +2063,60 @@
       volRows.push(r);
       return r;
     };
+    // 界面大小（自定义缩放 50%–200%）：填写数值不立即生效，点「完成」（或按回车）才应用；其它方式关闭设置则不应用
+    const SCALE_MIN = 50, SCALE_MAX = 200;
+    let scaleInput = null;
+    const clampScale = function (n) { return Math.max(SCALE_MIN, Math.min(SCALE_MAX, Math.round(n))) / 100; };
+    const scaleValue = function () {
+      const n = parseInt(scaleInput && scaleInput.value, 10);
+      return isFinite(n) ? clampScale(n) : baseScale;
+    };
+    const commit = function () { if (scaleInput) S.set('uiScale', scaleValue()); };
+    const scaleCtl = function () {
+      const box = h('div', { class: 'scale-ctl', style: { display: 'flex', alignItems: 'center', gap: '6px', flex: 'none' } });
+      const input = h('input', { type: 'number', class: 'scale-num', min: SCALE_MIN, max: SCALE_MAX, step: 5, value: Math.round(baseScale * 100), 'aria-label': '界面缩放倍率（百分比）', inputmode: 'numeric', style: { boxSizing: 'border-box', width: '72px', height: '32px', padding: '0 8px', border: '1px solid var(--line-strong, rgba(27,54,92,.15))', borderRadius: '9px', background: 'var(--surface-solid, #fff)', color: 'var(--text)', fontFamily: 'var(--font, inherit)', fontSize: '13px', fontWeight: '600', fontVariantNumeric: 'tabular-nums', textAlign: 'right', WebkitAppearance: 'none', appearance: 'textfield' } });
+      scaleInput = input;
+      const unit = h('span', { class: 'scale-unit', style: { color: 'var(--muted)', fontWeight: '600', fontSize: '12.5px' } }, '%');
+      // 输入不预览、不保存；失焦时只把数值规范到 50–200，真正应用在点「完成」时
+      const normalize = function () {
+        const n = parseInt(input.value, 10);
+        input.value = isFinite(n) ? Math.max(SCALE_MIN, Math.min(SCALE_MAX, n)) : Math.round(baseScale * 100);
+      };
+      input.addEventListener('change', normalize);
+      input.addEventListener('blur', function () { normalize(); snd('soft'); });
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); normalize(); snd('good'); finish(); }
+        else if (e.key === 'Escape') { e.preventDefault(); normalize(); back(); }
+        else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          const n = (parseInt(input.value, 10) || Math.round(baseScale * 100)) + (e.key === 'ArrowUp' ? 5 : -5);
+          input.value = Math.max(SCALE_MIN, Math.min(SCALE_MAX, n));
+        }
+      });
+      box.append(input, unit);
+      return box;
+    };
+    const finish = function () { commit(); back(); };
     const group = function (title) { return h('div', { class: 'set-group' }, title); };
     const extra = function (key) { return (UI.settingsExtra[key] || []).map(function (f) { try { return f(); } catch (e) { console.error(e); return null; } }).filter(Boolean); };
+    // 帧率上限：档位由实测刷新率决定（rAF 超不过刷新率），并补上刷新率的整数分频
+    const fpsRow = function () {
+      const hz = CM.refreshHz || 0;
+      const vals = S.fpsChoices(hz, S.get('fps'));
+      let desc = '垂直同步跟随显示器刷新率';
+      if (hz) {
+        const even = vals.map(Number).filter(function (v) { return v < hz && hz % v === 0; });
+        desc = '垂直同步即跟随显示器（实测 ' + hz + ' Hz）；只列出这台显示器能达到的档位' + (even.length ? '，其中 ' + even.join(' / ') + ' 是刷新率的整数分频、每帧间隔一致' : '') + '。模拟与结算的推进速度不受影响';
+      }
+      return row('clock', '帧率上限', seg('fps', vals.map(function (v) { return [v, v === 'vsync' ? '垂直同步' : v]; })), desc);
+    };
     const pages = {
       display: function () {
         return [group('显示')].concat(extra('display'), [
           row('label', '界面语言', seg('language', [['zh-CN', '简体中文'], ['zh-TW', '繁体中文'], ['en', 'English']]), '切换后立即生效，下次启动保留此选择'),
           row('sun', '主题', seg('theme', [['light', '浅色', 'sun'], ['dark', '深色', 'moon'], ['auto', '跟随系统']], function () { self.renderThemeBtns(); })),
-          row('expand', '界面大小', seg('uiScale', [[0.9, '小'], [1, '标准'], [1.15, '大']])),
+          row('expand', '界面大小', scaleCtl(), '填写缩放倍率 50%–200%，点击「完成」后应用，同时作用于界面上的所有组件'),
+          fpsRow(),
           group('地图'),
           row('label', '地图标注', seg('labels', [['all', '全部'], ['stations', '仅车站'], ['none', '关闭']])),
           row('car', '车辆与行人', toggle('agents'), '关闭后交通模拟照常进行，只是不显示运动的车辆和行人'),
@@ -2115,14 +2226,14 @@
       nav.appendChild(tabs[t[0]]);
     });
     const card = h('div', { class: 'card settings tabbed' },
-      h('div', { class: 'card-head' }, h('span', { class: 'badge b-slate' }, ic('gear')), h('h2', null, '设置'), h('span', { class: 'grow' }), h('button', { class: 'iconbtn', 'data-tip': '关闭', 'data-key': 'Esc', onclick: back }, ic('close'))),
+      h('div', { class: 'card-head' }, h('span', { class: 'badge b-slate' }, ic('gear')), h('h2', null, '设置'), h('span', { class: 'grow' }), h('button', { class: 'iconbtn', 'data-tip': '关闭', 'data-key': 'Esc', onclick: finish }, ic('close'))),
       h('div', { class: 'set-wrap' }, nav, body),
       h('div', { class: 'set-foot' },
         h('span', { class: 'grow' }),
         h('button', { class: 'btn sm ghost', onclick: function () { self.confirm('恢复默认设置？', '所有设置恢复为默认值，存档不受影响。', '恢复默认', function () { S.reset(); self.showSettings(cur); self.toast('已恢复默认设置', 'info'); }, true, 'gear'); } }, '恢复默认'),
-        h('button', { class: 'btn primary sm', onclick: back }, '完成')));
+        h('button', { class: 'btn primary sm', onclick: finish }, '完成')));
     show(cur, true);
-    this.openScreen(card, back);
+    this.openScreen(card, function () { restoreScale(); back(); });
   };
   // 文本文档（使用许可、第三方声明）：在游戏内显示，不打开外部程序。
   // v2.1：全文内嵌在 js/legal.js（直接打开 index.html 时 fetch 读不到本地文件），按文档排版：标题、分节、段落与链接
@@ -2192,6 +2303,7 @@
   UI.prototype.showSaveManager = function (inGame, mapId) {
     const self = this;
     const fileIn = h('input', { type: 'file', accept: '.json,.cmsave,application/json', style: { display: 'none' }, onchange: function (e) { const f = e.target.files[0]; if (f) self.importFile(f, true); e.target.value = ''; } });
+    self._fileIn = fileIn;
     const list = h('div');
     const editing = new Set();
     const draw = function () {
@@ -2269,34 +2381,51 @@
     this.screenRefresh = draw;
     const back = function () { if (inGame) self.closeScreen(); else if (mapId) self.showMapSelect(mapId); else self.showStart(); };
     const card = h('div', { class: 'card wide' }, this.cardHead('folder', 'b-blue', '读取存档' + (mapId && CM.MAPS[mapId] ? ' · ' + CM.MAPS[mapId].name : '')),
-      h('div', { class: 'note' }, '存档保存在当前浏览器、当前网址的站点数据中。每个进度相互独立；自动保存使用两个轮换槽位，手动存档最多 ' + CFG.saves.maxManual + ' 个。导入存档会新增槽位；同一进度已存在时创建独立副本。更换网址、浏览器或设备前请先导出备份。'),
+      h('div', { class: 'note' }, CM.DESKTOP ? '存档以文件形式保存在此电脑的 ' + CM.Save.dataDir() + ' 目录中。每个进度相互独立；自动保存使用两个轮换槽位，手动存档最多 ' + CFG.saves.maxManual + ' 个。导入存档会新增槽位；同一进度已存在时创建独立副本。' : '存档保存在当前浏览器、当前网址的站点数据中。每个进度相互独立；自动保存使用两个轮换槽位，手动存档最多 ' + CFG.saves.maxManual + ' 个。导入存档会新增槽位；同一进度已存在时创建独立副本。更换网址、浏览器或设备前请先导出备份。'),
       list, fileIn,
-      h('div', { class: 'modal-actions' }, h('button', { class: 'btn', onclick: function () { fileIn.click(); } }, ic('import'), '导入存档文件'), h('button', { class: 'btn primary', onclick: back }, inGame ? '关闭' : '返回')));
+      h('div', { class: 'modal-actions' }, h('button', { class: 'btn', onclick: function () { self.pickImport(true); } }, ic('import'), '导入存档文件'), h('button', { class: 'btn primary', onclick: back }, inGame ? '关闭' : '返回')));
     this.openScreen(card, back);
+  };
+  // 桌面版由宿主弹出系统文件对话框，浏览器沿用隐藏的 <input type=file>
+  UI.prototype.pickImport = function (keepScreen) {
+    const self = this;
+    if (!CM.DESKTOP) return this._fileIn && this._fileIn.click();
+    if (this._importing) return;
+    this._importing = true;
+    CM.Save.pickImport().then(function (r) {
+      self._importing = false;
+      if (r) self.importText(r.text, keepScreen);
+    }, function (e) {
+      self._importing = false;
+      self.toast('导入失败：' + (e && e.message || e), 'bad');
+    });
   };
   UI.prototype.importFile = function (file, keepScreen) {
     const self = this;
     if (file.size > 30 * 1024 * 1024) { this.toast('文件过大，不是有效的存档', 'bad'); return; }
     const rd = new FileReader();
-    rd.onload = function () {
-      CM.Save.importText(String(rd.result)).then(function (r) {
-        self.toast('已导入存档「' + r.name + '」（地图：' + ((CM.MAPS[r.map] || {}).name || r.map) + '）', 'good');
-        if (keepScreen && self.screenRefresh) self.screenRefresh();
-        else self.confirm('导入成功', '存档「' + r.name + '」已加入存档列表。是否立即载入？', '载入', function () { self.loadSlot(r.slotId); }, false, 'import');
-      }).catch(function (e) {
-        snd('error');
-        self.openScreen(h('div', { class: 'card' }, self.cardHead('error', 'b-red', '导入失败'), self.callout('bad', 'error', e.message), h('div', { class: 'note' }, '原有存档未受影响。'), h('div', { class: 'modal-actions' }, h('button', { class: 'btn primary', onclick: function () { if (self.g()) self.closeScreen(); else self.showStart(); } }, '确定'))));
-      });
-    };
+    rd.onload = function () { self.importText(String(rd.result), keepScreen); };
     rd.onerror = function () { self.toast('读取文件失败', 'bad'); };
     rd.readAsText(file);
+  };
+  UI.prototype.importText = function (text, keepScreen) {
+    const self = this;
+    CM.Save.importText(String(text)).then(function (r) {
+      self.toast('已导入存档「' + r.name + '」（地图：' + ((CM.MAPS[r.map] || {}).name || r.map) + '）', 'good');
+      if (keepScreen && self.screenRefresh) self.screenRefresh();
+      else self.confirm('导入成功', '存档「' + r.name + '」已加入存档列表。是否立即载入？', '载入', function () { self.loadSlot(r.slotId); }, false, 'import');
+    }).catch(function (e) {
+      snd('error');
+      self.openScreen(h('div', { class: 'card' }, self.cardHead('error', 'b-red', '导入失败'), self.callout('bad', 'error', e.message), h('div', { class: 'note' }, '原有存档未受影响。'), h('div', { class: 'modal-actions' }, h('button', { class: 'btn primary', onclick: function () { if (self.g()) self.closeScreen(); else self.showStart(); } }, '确定'))));
+    });
   };
   UI.prototype.exportSlot = function (slotId) {
     const self = this;
     return CM.Save.exportSlot(slotId).then(function (r) {
+      if (r && r.saved === false) return r;
       self.toast(r && r.raw ? '已导出原始存档数据，可用于恢复检查；当前载入问题仍需处理' : '已导出存档', r && r.raw ? 'warn' : 'good');
       return r;
-    }).catch(function (e) { self.toast('导出失败：' + e.message, 'bad'); return { error: e.message }; });
+    }).catch(function (e) { self.toast('导出失败：' + (e && e.message || e), 'bad'); return { error: e && e.message }; });
   };
   UI.prototype.loadSlot = function (slotId) {
     const self = this, request = this._slotLoadRequest = {};
@@ -2312,16 +2441,37 @@
   UI.prototype.backToMenu = function (after) {
     const self = this;
     const g = this.g();
-    const go = function () { CM.endGame(); if (typeof after === 'function') after(); else self.showStart(); };
+    const go = function () {
+      CM.endGame();
+      if (typeof after === 'function') after(); else self.showStart();
+      // 交还主菜单后再收起载入页：进度条先从 0 走到满，再淡出，途中不能和主菜单的渲染挤在同一帧里
+      if (!CM.LoadPage || CM.Settings.reducedMotion()) { self.finishLoading(function () {}); return; }
+      const t0 = performance.now(), DUR = CM.isLoading() ? 900 : 620;
+      self.loadProgress(0.1, '正在返回主菜单');
+      const step = function (now) {
+        const k = Math.min(1, (now - t0) / DUR);
+        if (k >= 1) {
+          // 先单独把 100% 画出来，再交给 finishLoading：它同一个任务里就置满并开始淡出，
+          // 走不到这一步的话进度条会停在半路（约 48%）就被收起
+          self.loadProgress(1, '即将进入主菜单');
+          requestAnimationFrame(function () { self.finishLoading(function () {}); });
+          return;
+        }
+        self.loadProgress(0.1 + k * 0.9, k > 0.85 ? '即将进入主菜单' : '正在返回主菜单');
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    };
     if (!g) { go(); return; }
     const leave = function () {
       if (g.speed > 0) self.setSpeed(0);   // 先暂停，保证保存的就是离开时的状态
-      if (self.isSaved()) { go(); return; }
+      if (self.isSaved()) { self.showLoading('正在返回主菜单…'); go(); return; }
       self.showLoading('正在保存当前进度…');
       self.doAutosave(true).then(function (r) {
         if (self.g() !== g) return;
         if (r && r.ok && self.isSaved()) { go(); return; }
         snd('error');
+        self.finishLoading(function () {});
         self.openScreen(h('div', { class: 'card' }, self.cardHead('error', 'b-red', '保存失败，未返回主菜单'),
           self.callout('bad', 'error', (r && r.error) || '当前进度未能保存。'),
           h('div', { class: 'note' }, '当前游戏仍保留在内存中。可以重试，或先「导出当前进度」作为备份。'),
@@ -2370,11 +2520,24 @@
     this.saving = CM.Save.save(g, 'auto').then(function (r) {
       self.saving = null;
       if (self.g() !== g) return r;
-      if (r.ok) { if (self.saveSeq === ver) self.markSaved(g, r.savedAt, snap); }
+      if (r.ok) { if (self.saveSeq === ver) self.markSaved(g, r.savedAt, snap); if (self.crashSnap) self.crashSnap = 0; }
       else { self.save = Object.assign({}, self.save, { state: 'error', at: Date.now(), msg: r.error }); self.toast('自动保存失败：' + r.error, 'bad'); }
       return r;
     });
     return this.saving;
+  };
+  // 桌面版：进度有改动但还没落盘时留一份快照，进程被强杀也能在下次启动取回
+  UI.prototype.watchCrashSave = function () {
+    const self = this;
+    if (!CM.DESKTOP || !CM.Save.crashSave) return;
+    setInterval(function () {
+      const g = self.g();
+      if (!g || self.isSaved() || (CM.isLoading && CM.isLoading())) return;
+      const now = Date.now();
+      if (now - (self.crashSnap || 0) < 30000) return;
+      self.crashSnap = now;
+      CM.Save.crashSave(g);
+    }, 10000);
   };
   UI.prototype.manualSave = function (slotId, label) {
     if (CM.isLoading && CM.isLoading()) return Promise.resolve({ ok: false, error: '正在载入游戏，请稍后保存' });
@@ -2502,7 +2665,7 @@
         h('button', { class: 'iconbtn', 'data-tip': '关闭', 'data-key': 'Esc', onclick: function () { self.closeScreen(); } }, ic('close'))),
       h('div', { class: 'jr-scroll' }, tl, parts),
       h('div', { class: 'modal-actions' }, h('button', { class: 'btn', onclick: function () { self.closeScreen(); self.openStats(); } }, ic('chart'), '查看统计'), h('button', { class: 'btn primary', onclick: function () { self.closeScreen(); } }, '继续')));
-    this.openScreen(card, function () { self.closeScreen(); });
+    this.openScreen(card, function () { self.closeScreen(); }, '', 'fwd');
   };
   UI.prototype.showFailure = function (f) {
     const g = this.g(), self = this;

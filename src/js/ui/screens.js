@@ -9,8 +9,12 @@
 
   // 公告是否已读（本机记录；无法访问本地存储时视为已读，不打扰）
   const NEWS_KEY = 'cm1.newsSeen';
-  const newsSeen = function () { try { return localStorage.getItem(NEWS_KEY) === CFG.GAME_VERSION; } catch (e) { return true; } };
-  const markNews = function () { try { localStorage.setItem(NEWS_KEY, CFG.GAME_VERSION); } catch (e) { /* ignore */ } };
+  const newsSeen = function () {
+    const s = CM.Settings && CM.Settings.get(NEWS_KEY);
+    if (s) return s === CFG.GAME_VERSION;
+    try { return localStorage.getItem(NEWS_KEY) === CFG.GAME_VERSION; } catch (e) { return true; }
+  };
+  const markNews = function () { try { if (CM.Settings) CM.Settings.set(NEWS_KEY, CFG.GAME_VERSION); else localStorage.setItem(NEWS_KEY, CFG.GAME_VERSION); } catch (e) { /* ignore */ } };
   UI.prototype.newsUnread = function () { return !newsSeen(); };
 
   // 难度：点 + 文字
@@ -80,7 +84,8 @@
         btn('gear', '设置', function () { self.showSettings(); }),
         btn('power', '退出', function () { self.quitGame(); })),
       CM.MAPS.tutorial ? h('button', { class: 'start-learn', onclick: function () { self.showMapSelect('tutorial'); } }, ic('help', 16), h('span', null, '第一次玩？先试试'), h('b', null, '新手教程 · 青湾'), ic('chev', 14)) : null,
-      !storageOk ? h('div', { class: 'callout bad', style: { marginTop: '14px' } }, ic('error'), h('div', { class: 'ct' }, '当前浏览器禁止本地存储，进度将无法自动保存。')) : null,
+      !storageOk ? h('div', { class: 'callout bad', style: { marginTop: '14px' } }, ic('error'), h('div', { class: 'ct' },
+        CM.Save.isDesktop() ? '进度保存在本地目录，但存档目录当前不可写，进度将无法自动保存。' : '当前浏览器禁止本地存储，进度将无法自动保存。')) : null,
       h('div', { class: 'start-foot' }, '规划地铁、改变出行、塑造城市。', h('br'),
         h('a', { href: 'LICENSE.txt', target: '_blank', rel: 'noopener' }, '© 2026 VinsonFung · 仅限非商业使用'), h('br'),
         h('a', { href: 'https://www.openstreetmap.org/copyright', target: '_blank', rel: 'noopener' }, '地图 © OpenStreetMap 贡献者 · ODbL'), ' · v' + CFG.GAME_VERSION));

@@ -1485,7 +1485,7 @@
       if (!r.ok) { self.toast(r.error, 'bad'); return; }
       CM.Sound && CM.Sound.play('coin');
       self.toast('已发行' + D0[kind].name + ' ' + U.fmtMoney(r.bond.amount) + '，资金进入建设专项资金', 'good');
-      self.closeScreen(); self.markUnsaved(); self.finTab = 'debt'; self.openPage('finance', 'debt', { root: true });
+      self.hideScreenNow(); self.markUnsaved(); self.finTab = 'debt'; self.openPage('finance', 'debt', { root: true });
     } }, CM.icon('check'), '确认发行');
     const termCtl = h('div', { class: 'seg-ctl' });
     const draw = function () {
@@ -1734,7 +1734,7 @@
     el.appendChild(this.kv([['进度名称', g.name], ['游戏模式', g.mode === 'free' ? '自由建造' : '经营挑战'], ['游戏日期', g.clock.y + '年' + g.clock.m + '月' + g.clock.d + '日']]));
     el.appendChild(h('div', { class: 'row', style: { margin: '10px 0', flexWrap: 'wrap' } },
       h('button', { class: 'btn sm primary', onclick: function () { self.manualSave(); } }, '手动保存'),
-      h('button', { class: 'btn sm', onclick: function () { try { CM.Save.exportGame(g); self.toast('已导出存档文件', 'good'); } catch (e) { self.toast('导出失败：' + e.message, 'bad'); } } }, '导出当前进度'),
+      h('button', { class: 'btn sm', onclick: function () { CM.Save.exportGame(g).then(function (ok) { if (ok) self.toast('已导出存档文件', 'good'); }); } }, '导出当前进度'),
       h('button', { class: 'btn sm', onclick: function () { self.showSaveManager(true); } }, '存档管理')));
     const games = CM.Save.list();
     const mine = games.find(function (x) { return x.gameId === g.id; });
@@ -1745,9 +1745,31 @@
       return b;
     }, true));
     el.appendChild(this.sec('sv-note', '关于本地保存', '', function () {
-      return h('div', { class: 'note' }, '游戏无需账号，进度保存在当前浏览器、当前网址的站点数据（' + CM.Save.backend() + '）中，索引保存在 localStorage。开启自动保存后，每月及建设完成时保存，在两个自动槽位间轮换。导出文件的位置由浏览器下载设置或保存对话框决定。本地存档不跨网址、浏览器或设备同步；清除站点数据会删除存档，请提前导出备份，更换环境后再导入。全部存档约 ' + (CM.Save.usage() / 1024 / 1024).toFixed(1) + ' MB。');
+      return h('div', { class: 'note' }, CM.Save.storageNote());
     }));
+    if (CM.DESKTOP && CM.Save.recoverList) {
+      el.appendChild(this.sec('sv-recover', '崩溃恢复文件', '', function () {
+        const box = h('div');
+        CM.Save.recoverList().then(function (items) {
+          if (!items.length) { box.appendChild(h('div', { class: 'note' }, '没有需要恢复的进度。')); return; }
+          for (const item of items) {
+            box.appendChild(h('div', { class: 'slot' },
+              h('div', { class: 'info' }, h('div', { class: 't' }, item.name), h('div', { class: 'tiny muted' }, (item.bytes / 1024).toFixed(0) + ' KB · ' + (CM.Save.dataDir() || ''))),
+              h('button', { class: 'btn sm', onclick: function () { self.recoverFile(item); } }, '导入恢复'),
+              h('button', { class: 'btn sm ghost danger', onclick: function () { CM.Save.recoverDrop(item.name); self.rerenderPage(); } }, '删除')));
+          }
+        });
+        return box;
+      }, true));
+    }
     return { title: '存档', el: el };
+  };
+  UI.prototype.recoverFile = function (item) {
+    const self = this;
+    CM.Save.recoverLoad(item.name).then(function (r) {
+      self.importText(r.text, false);
+      CM.Save.recoverDrop(item.name);
+    }, function (e) { self.toast('恢复失败：' + (e && e.message || e), 'bad'); });
   };
   UI.prototype.slotRow = function (sl, inGame) {
     const self = this;

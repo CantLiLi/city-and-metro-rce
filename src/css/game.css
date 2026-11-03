@@ -164,7 +164,7 @@
 
 
 /* ---------- v1.8 绘线起点的线路选择框 ---------- */
-.line-picker { position: fixed; z-index: 45; width: 280px; padding: 9px; display: flex; flex-direction: column; gap: 4px; zoom: var(--uiz, 1); animation: riseIn .22s var(--ease) both; transition: opacity .18s, transform .18s; }
+.line-picker { position: fixed; z-index: 45; width: 280px; padding: 9px; display: flex; flex-direction: column; gap: 4px; animation: riseIn .22s var(--ease) both; transition: opacity .18s, transform .18s; }
 .line-picker.out { opacity: 0; transform: scale(.97); pointer-events: none; }
 .lp-h { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .lp-h > .ico { color: var(--accent); }

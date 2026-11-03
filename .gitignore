@@ -1,5 +1,6 @@
 # Local credentials and machine-specific files
 .env
+.venv/
 .env.*
 !.env.example
 .dev.vars
@@ -21,4 +22,8 @@ node_modules/
 .tools/
 *.log
 *.tmp
+.tmp/
+data/
+build/
+build
 

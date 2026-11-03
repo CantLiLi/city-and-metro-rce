@@ -1,14 +1,15 @@
 /* 城市与地铁 · 全屏界面：开始界面、下拉菜单、选图、简报、公告、城市纪事 */
 
 /* ---------- 全屏界面 ---------- */
-#screen { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgba(30, 52, 84, 0.16); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); transition: opacity .35s var(--ease); }
-:root[data-theme="dark"] #screen { background: rgba(4, 8, 16, 0.45); }
+#screen { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; transition: opacity .35s var(--ease); }
 #screen.hidden { opacity: 0; pointer-events: none; }
 #screen.start { background: linear-gradient(90deg, rgba(239, 245, 250, 0.97) 0%, rgba(239, 245, 250, 0.88) 24%, rgba(239, 245, 250, 0.4) 44%, rgba(239, 245, 250, 0) 62%); backdrop-filter: none; -webkit-backdrop-filter: none; place-items: center start; }
 :root[data-theme="dark"] #screen.start { background: linear-gradient(90deg, rgba(15, 23, 36, 0.96) 0%, rgba(15, 23, 36, 0.86) 24%, rgba(15, 23, 36, 0.35) 44%, rgba(15, 23, 36, 0) 62%); }
 .card { background: var(--surface-solid); border-radius: 18px; box-shadow: 0 24px 60px rgba(36, 66, 104, 0.2); padding: 24px 26px; width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow-y: auto; animation: cardIn .38s var(--spring); border: 1px solid var(--line); }
 .card.wide { width: min(860px, calc(100vw - 32px)); }
-@keyframes cardIn { from { opacity: 0; transform: translateY(14px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes cardIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes cardOut { to { opacity: 0; transform: translateY(10px); } }
+.card.scr-dismiss { animation: cardOut .18s var(--ease) forwards; pointer-events: none; }
 .card h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: 2px; }
 .card h2 { font-size: 19px; margin: 0 0 12px; display: flex; align-items: center; gap: 10px; color: var(--text); }
 .card h3 { font-size: 14px; margin: 16px 0 8px; }
@@ -36,9 +37,8 @@
 .start-btn[disabled] { opacity: .5; cursor: not-allowed; transform: none; box-shadow: none; }
 .start-foot { margin-top: 26px; font-size: 11.5px; color: var(--muted); line-height: 1.7; }
 .start-foot a { color: inherit; text-underline-offset: 3px; }
-.start-wrap > * { animation: riseIn .6s var(--ease) both; }
-.start-menu > * { animation: riseIn .5s var(--ease) both; }
-.start-menu > *:nth-child(2) { animation-delay: .05s; } .start-menu > *:nth-child(3) { animation-delay: .1s; } .start-menu > *:nth-child(4) { animation-delay: .15s; } .start-menu > *:nth-child(5) { animation-delay: .2s; }.mode-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 6px 0 0; }
+/* 开始界面不做进场动画：页面刷新后标题与按钮直接到位，只有从其它界面返回时才滑入 */
+.mode-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 6px 0 0; }
 .mode-card { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line-strong); border-radius: 14px; padding: 16px 18px; cursor: pointer; transition: border-color .18s, box-shadow .2s, transform .2s var(--spring); text-align: left; background: var(--surface-solid); }
 .mode-card:hover { transform: translateY(-3px); border-color: var(--accent); box-shadow: 0 10px 26px rgba(36, 66, 104, 0.14); }
 .mode-card.on { border-color: rgba(47, 111, 168, 0.45); }
@@ -81,7 +81,7 @@
 
 
 /* ---------------- 列车跟随 ---------------- */
-#followCard { position: fixed; left: 0; right: 0; margin: 0 auto; bottom: 16px; z-index: 24; width: min(560px, calc(100vw - 24px)); padding: 12px 14px; border-radius: 18px; display: flex; flex-direction: column; gap: 8px; zoom: var(--uiz, 1); animation: riseIn .35s var(--ease) both; }
+#followCard { position: fixed; left: 0; right: 0; margin: 0 auto; bottom: 16px; z-index: 24; width: min(560px, calc(100vw - 24px)); padding: 12px 14px; border-radius: 18px; display: flex; flex-direction: column; gap: 8px; animation: riseIn .35s var(--ease) both; }
 #followCard .fc-head { display: flex; align-items: center; gap: 10px; }
 #followCard .fc-num { min-width: 30px; height: 26px; padding: 0 7px; border-radius: 8px; display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 13px; }
 #followCard .fc-line { font-weight: 800; font-size: 15px; }
@@ -189,8 +189,7 @@ body.cinema #followCard .fc-hint { display: block; }
 .start-learn .ico { color: var(--teal); }
 .start-learn span { color: var(--muted); }
 .start-learn b { flex: 1; color: var(--teal); }
-.start-menu + .start-learn { animation: riseIn .5s var(--ease) .2s both; }
-
+.start-menu + .start-learn { animation: none; }
 /* ---------- 选择地图：左侧预览与选择，右侧详情 ---------- */
 .card.msel { width: min(1180px, calc(100vw - 32px)); height: min(780px, calc(100vh - 40px)); padding: 0; display: grid; grid-template-columns: 372px minmax(0, 1fr); overflow: hidden; outline: none; }
 .msel-q { flex: 1; border: 0; outline: 0; background: transparent; font-size: 13.5px; min-width: 0; padding: 0; }
@@ -427,18 +426,20 @@ body.cinema #followCard .fc-hint { display: block; }
 .ms2-acts .map-mode.sub .badge { width: 30px; height: 30px; border-radius: 9px; }
 /* 切换动效：旧界面向一侧滑开淡出，新界面从另一侧滑入；背景地图不动 */
 @keyframes msRail { from { opacity: 0; transform: translateX(22px); } to { opacity: 1; transform: none; } }
-@keyframes msStage { from { opacity: 0; transform: translateX(44px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes msStage { from { opacity: 0; transform: translateX(44px); } to { opacity: 1; transform: none; } }
 @keyframes scrOutL { to { opacity: 0; transform: translateX(-26px); } }
 @keyframes scrOutR { to { opacity: 0; transform: translateX(26px); } }
 @keyframes scrFade { to { opacity: 0; } }
 @keyframes slideInL { from { opacity: 0; transform: translateX(-22px); } to { opacity: 1; transform: none; } }
 .scr-out { position: absolute; inset: 0; display: grid; pointer-events: none; z-index: 2; }
+/* 主页之上打开的卡片：作为覆盖层浮在主页（平面 A）之上，不撑开布局、不改变主页的网格定位 */
+#screen.start > .scr-sheet { position: absolute; inset: 0; margin: auto; z-index: 3; height: max-content; }
 .scr-out.scr-fwd { animation: scrOutL .3s var(--ease) both; }
 .scr-out.scr-back { animation: scrOutR .3s var(--ease) both; }
 .scr-out.scr-zoom, .scr-out.scr-fade { animation: scrFade .26s var(--ease) both; }
 #screen.scr-in-back .ms2-rail { animation-name: slideInL; }
 #screen.scr-in-back .ms2-stage { animation: msStage .5s var(--ease) both; }
-#screen.scr-in-back .start-wrap > *, #screen.scr-in-back .start-menu > * { animation-name: slideInL; }
+#screen.scr-in-back .start-wrap > *, #screen.scr-in-back .start-menu > *, #screen.scr-in-back .start-learn { animation: slideInL .5s var(--ease) both; }
 /* 载入背景：所选城市的地图画面铺满全屏（自选择地图放大而来），载入卡片浮在其上 */
 #stagebg { position: absolute; inset: 0; z-index: -1; pointer-events: none; opacity: 0; transition: opacity .5s var(--ease); overflow: hidden; }
 #stagebg.on { opacity: 1; }

@@ -1,0 +1,35 @@
+html.desktop,
+html.desktop body {
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html.desktop input,
+html.desktop textarea,
+html.desktop [contenteditable] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+html.desktop ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+html.desktop ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html.desktop ::-webkit-scrollbar-thumb {
+  background: rgba(120, 140, 160, 0.45);
+  border-radius: 6px;
+}
+
+html.desktop ::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 140, 160, 0.7);
+}
+
+html.desktop [draggable="true"] {
+  -webkit-user-drag: none;
+}

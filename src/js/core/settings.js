@@ -8,6 +8,7 @@
     theme: 'auto',        // light | dark | auto（跟随系统）
     uiScale: 1,           // 界面大小
     labels: 'all',        // 地图标注：all 全部 | stations 仅车站 | none 关闭
+  fps: 'vsync',         // 帧率上限：'vsync' 跟随显示器刷新率 | 30 | 60 | 90 | 120
     colorBlind: false,    // 色盲辅助配色及非颜色识别提示，只影响显示
     agents: true,         // 车辆、行人与列车动画
     sound: true, volume: 0.6,   // 总开关与总音量
@@ -19,24 +20,50 @@
     recentColors: [],      // 最近使用的自定义线路颜色
   };
   let cur = Object.assign({}, DEF);
+  // 桌面版的偏好设置由宿主保存为本地文件，页面仍通过同一个同步接口读写
+  const LS = (window.CM && CM.DESKTOP) ? CM.DESKTOP.localStorage : {
+    get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } },
+  };
   try {
-    const s = JSON.parse(localStorage.getItem(KEY) || 'null');
+    const s = JSON.parse(LS.get(KEY) || 'null');
     if (s) {
       for (const k in DEF) if (s[k] !== undefined) cur[k] = s[k];
       // 旧版的两个标注开关合并为一项
       if (s.labels === undefined && (s.stationLabels === false || s.mapLabels === false)) cur.labels = s.stationLabels === false ? 'none' : 'stations';
     } else {
-      const t = localStorage.getItem('cm1.theme'); if (t === 'light' || t === 'dark') cur.theme = t;
-      const so = JSON.parse(localStorage.getItem('cm1.sound') || 'null'); if (so) { cur.sound = so.enabled !== false; if (isFinite(so.volume)) cur.volume = so.volume; }
+      const t = LS.get('cm1.theme'); if (t === 'light' || t === 'dark') cur.theme = t;
+      const so = JSON.parse(LS.get('cm1.sound') || 'null'); if (so) { cur.sound = so.enabled !== false; if (isFinite(so.volume)) cur.volume = so.volume; }
     }
   } catch (e) { /* 存储不可用时使用默认值 */ }
   cur.colorBlind = cur.colorBlind === true;
   if (!['zh-CN', 'zh-TW', 'en'].includes(cur.language)) cur.language = 'zh-CN';
+  cur.fps = normFps(cur.fps);
   const recent = function (v) { return Array.isArray(v) ? v.filter(function (c) { return typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c); }).map(function (c) { return c.toLowerCase(); }).filter(function (c, i, a) { return a.indexOf(c) === i; }).slice(0, 8) : []; };
   cur.recentColors = recent(cur.recentColors);
   if (!cur.keys || typeof cur.keys !== 'object' || Array.isArray(cur.keys)) cur.keys = {};
   const subs = [];
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(cur)); } catch (e) { /* ignore */ } }
+  // 帧率上限：'vsync' 跟随显示器刷新率，其余存整数字符串
+  function normFps(v) {
+    if (v === 'vsync') return v;
+    const n = Math.round(Number(v));
+    return n >= 24 && n <= 1000 ? String(n) : 'vsync';
+  }
+  const FPS_PRESETS = [30, 60, 90, 120, 144, 165, 240];
+  // 档位候选：rAF 超不过刷新率，高于刷新率的档位没有意义；60 的整数倍之外再补刷新率的整数分频，
+  // 那些档位每帧间隔一致，不会长短帧交替（144Hz 上选 120 就会交替，选 72/48 则不会）
+  function fpsChoices(hz, cur) {
+    const out = ['vsync'], seen = { vsync: 1 };
+    const add = function (v) {
+      v = Math.round(v);
+      if (v >= 24 && v <= 1000 && !seen[v]) { seen[v] = 1; out.push(String(v)); }
+    };
+    FPS_PRESETS.forEach(function (v) { if (!hz || v <= hz + 1) add(v); });
+    if (hz && hz % 24 === 0 && hz % 60 !== 0) for (let d = 2; d <= 4; d++) if (hz % d === 0) add(hz / d);
+    add(Number(cur));
+    return out.sort(function (a, b) { return a === 'vsync' ? -1 : b === 'vsync' ? 1 : Number(a) - Number(b); });
+  }
+  function save() { try { LS.set(KEY, JSON.stringify(cur)); } catch (e) { /* ignore */ } }
   const mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
   const mqRM = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
 
@@ -47,6 +74,7 @@
     set: function (k, v) {
       if (k === 'language' && !['zh-CN', 'zh-TW', 'en'].includes(v)) v = 'zh-CN';
       if (k === 'colorBlind') v = v === true;
+      if (k === 'fps') v = normFps(v);
       if (k === 'recentColors') v = recent(v);
       if (cur[k] === v) return;
       cur[k] = v; save();
@@ -59,6 +87,7 @@
       for (const k of Object.keys(DEF)) for (const f of subs) { try { f(k, cur[k]); } catch (e) { console.error(e); } }
     },
     on: function (fn) { subs.push(fn); },
+    fpsChoices: fpsChoices,
     // 系统“减少动态效果”偏好（不再单独设置）
     reducedMotion: function () { return !!(mqRM && mqRM.matches); },
     resolvedTheme: function () { return cur.theme === 'auto' ? (mq && mq.matches ? 'dark' : 'light') : cur.theme; },

@@ -438,6 +438,7 @@ window.CM.I18N_EN = {
   "保存失败，未返回主菜单": "Save failed. Still in the game.",
   "当前进度未能保存。": "The current game could not be saved.",
   "不保存，直接返回": "Return Without Saving",
+  "不保存，直接退出": "Quit Without Saving",
   "留在游戏": "Stay in Game",
   "重试保存": "Retry Save",
   "未确认的建设草案不会保存": "Unconfirmed construction drafts will not be saved",

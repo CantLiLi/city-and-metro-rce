@@ -110,113 +110,54 @@
     snd('notify');
     close = this.histLife(box, 9000 + Math.min(4000, String(ev.desc || '').length * 40));
   };
-
-  UI.prototype.showHistDigest = function (list) {
+  // 载入页：全屏纯色背景（覆盖整个窗口）+ LOGO + 线路式进度条。它是独立于界面层 #screen 的整屏浮层（#loadpageRoot），
+  // 不再做成浮在模糊地图上的卡片。进度由开局、读档与推演过程报告（CM.loadProgress），两次报告之间缓慢前移
+  UI.prototype.loadingEsc = function (on) {
     const self = this;
-    let close = null;
-    const rows = list.slice(-5).map(function (ev) { return h('div', { class: 'hd-row' }, h('b', null, ev.y + '.' + (ev.m || 1)), h('span', null, (ev.econ ? '经济：' : '') + ev.title)); });
-    const box = h('div', { class: 'hist-card digest' },
-      h('div', { class: 'hc-date' }, h('b', null, String(list.length)), h('small', null, '件')),
-      h('div', { class: 'hc-body' }, h('div', { class: 'hc-kick' }, h('span', null, '历史时刻 · 这段时间里')), h('div', { class: 'hd-list' }, rows),
-        list.length > 5 ? h('div', { class: 'hc-desc' }, '另有 ' + (list.length - 5) + ' 件，见城市纪事') : null),
-      h('div', { class: 'hc-acts' },
-        h('button', { class: 'iconbtn', 'data-tip': '城市纪事', onclick: function () { if (close) close(); self.openStats('milestones'); } }, ic('book')),
-        h('button', { class: 'iconbtn', 'aria-label': '关闭', onclick: function () { if (close) close(); } }, ic('close'))),
-      h('i', { class: 'hc-life' }));
-    this.histHost.appendChild(box);
-    snd('notify');
-    close = this.histLife(box, 12000);
+    if (this._ldEsc) { document.removeEventListener('keydown', this._ldEsc, true); this._ldEsc = null; }
+    if (!on) return;
+    this._ldEsc = function (e) {
+      if (e.key !== 'Escape' && e.key !== 'Esc') return;
+      e.preventDefault(); e.stopPropagation();
+      self.cancelLoading();
+    };
+    document.addEventListener('keydown', this._ldEsc, true);
   };
-
-  // 载入动画（v2.2 第三次重做）：严格以 LOGO 原图为准，循环播放、不旋转。画面就是 LOGO 图片本身，由沿笔画走向的遮罩逐段显出——
-  // 外环像列车绕行一圈画出，楼群自左向右依次升起，地铁线穿过车站画出、车站随之亮起，成形后一道光扫过，再柔和地淡出，周而复始。
-  // 笔画位置量自 LOGO 原图（384 × 384）。下方进度条为一段线路，沿途车站逐个点亮
-  const LD_LOOP = 4200;
-  let ldSerial = 0;
-  const LD_RING = { cx: 192.5, cy: 212.3, r: 158, a0: -73, a1: 253 };
-  // [x, 底, 顶, 宽]：六座楼
-  const LD_BARS = [[80.5, 211, 150, 44], [127.5, 211, 108, 46], [171.5, 211, 18, 38], [214, 238, 0, 38], [257.5, 245, 80, 45], [305, 245, 140, 45]];
-  // 地铁线（遮罩中心线，宽约为线宽加车站外圈）与车站 [x, y, 半径]
-  const LD_LINES = [{ d: 'M30 224 L183 224 L193 236 L212 256 L356 256', w: 32 }, { d: 'M84 287 L158 288 Q182 295 188 322', w: 32 }, { d: 'M192 238 L192 330', w: 28 }];
-  const LD_STATIONS = [[38, 224.5, 25], [92, 287, 25], [192, 149, 21], [345, 256, 25], [192.5, 343.5, 27]];
-  // 各笔画在一个循环中的开始时刻与时长（0–1）
-  const LD_T = { ring: [0.02, 0.24], bars: [0.18, 0.05, 0.16], lines: [[0.36, 0.2], [0.46, 0.14], [0.44, 0.1]], st: [0.38, 0.5, 0.33, 0.54, 0.56], shine: [0.62, 0.16], fade: [0.82, 0.12] };
-  // 进度条以下与原先相同；进度由开局、读档与推演过程报告（CM.loadProgress），两次报告之间缓慢前移，不会停住不动
-  // mapId（v2.2）：载入的城市——以该城市的地图画面为全屏背景（从选择地图放大过来时沿用放大的画面）
   UI.prototype.showLoading = function (text, kind, mapId) {
-    const self = this;
-    const stops = kind === 'load' ? [[0.3, '城市'], [0.42, '交通'], [0.95, '出行']] : kind === 'pre' ? [[0.2, '城市'], [0.83, '推演'], [0.96, '出行']] : [[0.2, '城市'], [0.3, '交通'], [0.92, '出行']];
-    this._loadNote = h('div', { class: 'ld-note' }, text);
-    const fill = h('i', { class: 'ld-fill' }), head = h('span', { class: 'ld-head' }), pct = h('b', { class: 'ld-pct' }, '0%'), stage = h('span', { class: 'ld-stage' }, '准备');
-    const track = h('div', { class: 'ld-track' }, h('i', { class: 'ld-rail' }), fill,
-      stops.map(function (s) { return h('span', { class: 'ld-stop', style: { left: (s[0] * 100) + '%' } }, h('i'), h('em', null, s[1])); }), head);
-    // LOGO 图片 + 沿笔画的遮罩（描边按 pathLength=1 的虚线偏移逐段显出）；光带只落在 LOGO 的不透明像素上
-    const NS = 'http://www.w3.org/2000/svg', uid = 'ld' + (++ldSerial), dark = document.documentElement.dataset.theme === 'dark', src = dark ? 'img/logo-white.png' : 'img/logo-navy.png';
-    const el = function (tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
-    const svg = el('svg', { viewBox: '0 0 384 384', 'aria-hidden': 'true' }), defs = el('defs', {}, svg);
-    const mask = el('mask', { id: uid + 'm', maskUnits: 'userSpaceOnUse', x: 0, y: 0, width: 384, height: 384 }, defs);
-    const stroke = function (d, w) { return el('path', { d: d, fill: 'none', stroke: '#fff', 'stroke-width': w, 'stroke-linecap': 'butt', 'stroke-linejoin': 'round', pathLength: 1, 'stroke-dasharray': '1 2', 'stroke-dashoffset': 1 }, mask); };
-    const RG = LD_RING, pt = function (a) { a *= Math.PI / 180; return (RG.cx + Math.cos(a) * RG.r).toFixed(1) + ' ' + (RG.cy + Math.sin(a) * RG.r).toFixed(1); };
-    const ring = stroke('M' + pt(RG.a0) + ' A' + RG.r + ' ' + RG.r + ' 0 1 1 ' + pt(RG.a1), 29);
-    const bars = LD_BARS.map(function (b) { return stroke('M' + b[0] + ' ' + b[1] + ' L' + b[0] + ' ' + b[2], b[3]); });
-    const lines = LD_LINES.map(function (l) { return stroke(l.d, l.w); });
-    const stations = LD_STATIONS.map(function (s) { return el('circle', { cx: s[0], cy: s[1], r: 0, fill: '#fff' }, mask); });
-    const alpha = el('mask', { id: uid + 'a', style: 'mask-type:alpha', maskUnits: 'userSpaceOnUse', x: 0, y: 0, width: 384, height: 384 }, defs);
-    el('image', { href: src, x: 0, y: 0, width: 384, height: 384 }, alpha);
-    const grad = el('linearGradient', { id: uid + 'g', x1: 0, x2: 1, y1: 0, y2: 0 }, defs);
-    for (const s of [[0, 0], [0.5, dark ? 0.35 : 0.55], [1, 0]]) el('stop', { offset: s[0], 'stop-color': '#fff', 'stop-opacity': s[1] }, grad);
-    const mark = el('g', {}, svg);
-    el('image', { href: src, x: 0, y: 0, width: 384, height: 384, mask: 'url(#' + uid + 'm)' }, mark);
-    const shineG = el('g', { mask: 'url(#' + uid + 'a)' }, mark), shine = el('rect', { x: -260, y: -40, width: 150, height: 464, fill: 'url(#' + uid + 'g)', transform: 'skewX(-16)' }, shineG);
-    const logo = h('div', { class: 'ld-logo' }); logo.appendChild(svg);
-    const bgOn = !!(this._stageBg && this._stageBg.classList.contains('on')), mp = mapId && CM.MAPS[mapId];
-    const again = /ld-screen/.test(this.screen.className) && this.screen.className.indexOf('hidden') < 0;   // 读档的第二段载入：原地更新，不再播放入场
-    this.openScreen(h('div', { class: 'card ld-card' }, logo, this._loadNote, track, h('div', { class: 'ld-row' }, stage, pct)), null, mp ? 'ld-screen' + (again ? ' noanim' : '') : '', mp && !again ? (bgOn ? 'zoom' : 'fade') : null);
-    if (mp && !bgOn) this.stageBg(CM.mapThumb(mapId, dark ? 'dark' : 'light'));
-    const L = this._ld = { goal: 0.02, disp: 0, cap: 0.08, done: false, t: performance.now(), t0: performance.now(), fill: fill, head: head, pct: pct, stage: stage, stops: track.querySelectorAll('.ld-stop'), at: stops };
-    const still = CM.Settings.reducedMotion(), T = LD_T;
-    const ease = function (x) { x = U.clamp(x, 0, 1); return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };   // 三次缓入缓出
-    const draw = function (e, u) { e.setAttribute('stroke-dashoffset', (1 - u).toFixed(4)); };
-    const anim = function (now) {
-      const t = still ? 0.7 : ((now - L.t0) % LD_LOOP) / LD_LOOP, at = function (s, d) { return still ? 1 : ease((t - s) / d); };
-      draw(ring, at(T.ring[0], T.ring[1]));
-      bars.forEach(function (b, i) { draw(b, at(T.bars[0] + i * T.bars[1], T.bars[2])); });
-      lines.forEach(function (l, i) { draw(l, at(T.lines[i][0], T.lines[i][1])); });
-      stations.forEach(function (c, i) { c.setAttribute('r', (LD_STATIONS[i][2] * at(T.st[i], 0.08)).toFixed(2)); });
-      const s = still ? 0 : U.clamp((t - T.shine[0]) / T.shine[1], 0, 1);
-      shine.setAttribute('x', (-260 + s * 700).toFixed(1)); shine.style.opacity = s > 0 && s < 1 ? 1 : 0;
-      mark.style.opacity = still ? 1 : (1 - ease((t - T.fade[0]) / T.fade[1])).toFixed(4);
-    };
-    anim(performance.now());
-    const tick = function (now) {
-      if (self._ld !== L || !fill.isConnected) return;
-      const dt = Math.min(0.1, (now - L.t) / 1000); L.t = now;
-      // 先较快追上报告的进度，之后向下一个上限缓慢前移；完成时补满
-      if (L.disp < L.goal) L.disp += (L.goal - L.disp) * (1 - Math.exp(-dt * (L.done ? 9 : 5))) + dt * 0.01;
-      else L.disp += (L.cap - L.disp) * (1 - Math.exp(-dt * 0.3));
-      L.disp = Math.min(L.disp, L.done ? 1 : 0.99);
-      const p = L.disp;
-      fill.style.transform = 'scaleX(' + p.toFixed(4) + ')'; head.style.left = (p * 100).toFixed(2) + '%';
-      pct.textContent = Math.floor(p * 100 + (L.done && p > 0.995 ? 0.5 : 0)) + '%';
-      for (let i = 0; i < L.stops.length; i++) L.stops[i].classList.toggle('on', p >= L.at[i][0] - 0.002);
-      anim(now);
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
+    // 上一段载入的整屏退场可能还没结束：当场撤销，载入页继续用，不留在淡出的空白页上
+    if (CM.LoadPage && CM.LoadPage.revive && CM.LoadPage.revive()) { this._loading = true; this.loadingEsc(true); return; }
+    this.closeScreen();
+    this._loading = true;
+    if (this.stageBg) this.stageBg(null);
+    if (CM.LoadPage) CM.LoadPage.show(text, kind);
+    this.loadingEsc(true);
   };
   UI.prototype.loadProgress = function (p, label) {
-    const L = this._ld; if (!L || !L.fill.isConnected) return;
-    L.goal = Math.max(L.goal, U.clamp(p, 0, 1)); L.cap = Math.min(0.99, L.goal + 0.08);
-    if (label && L.stage.textContent !== label) { L.stage.textContent = label; if (CM.I18n) CM.I18n.localize(L.stage); }
-    if (p >= 1) L.done = true;
+    if (!this._loading || !CM.LoadPage) return;
+    CM.LoadPage.set(p, label);
   };
-
+  // 载入的活干完了：进度条不再受 50% 上限限制，立刻补满后淡出。
+  UI.prototype.loadDone = function (label) {
+    if (!this._loading || !CM.LoadPage) return;
+    if (CM.LoadPage.finish) CM.LoadPage.finish(label);
+  };
   UI.prototype.finishLoading = function (cb) {
-    const L = this._ld;
-    if (!L || !L.fill.isConnected || CM.Settings.reducedMotion()) { cb(); return; }
+    this.loadingEsc(false);
+    if (!this._loading || CM.Settings.reducedMotion()) { this._loading = false; if (CM.LoadPage) CM.LoadPage.hide(cb); else cb(); return; }
     this.loadProgress(1, '准备就绪');
-    const self = this;
-    setTimeout(function () { if (self._ld === L) { L.pct.textContent = '100%'; L.fill.style.transform = 'scaleX(1)'; L.head.style.left = '100%'; setTimeout(function () { if (self._ld === L) { self._ld = null; cb(); } }, 32); } }, 360);   // 期间又开始了新的载入时放弃这一次
+    this._loading = false;
+    if (CM.LoadPage) CM.LoadPage.hide(cb); else cb();
+  };
+  // 放弃载入：收起载入页、恢复主菜单，再中断正在跑的开局 / 读档（顺序不能反，否则被中断的载入
+  // 会接着走它自己的收尾，把界面交还给一张半透明的地图）
+  UI.prototype.cancelLoading = function () {
+    if (!this._loading) return;
+    this._loading = false;
+    this.loadingEsc(false);
+    if (CM.LoadPage) CM.LoadPage.hide();
+    if (CM.LoadPage && CM.LoadPage.reset) CM.LoadPage.reset();
+    this.showStart();
+    if (CM.cancelLoad) CM.cancelLoad();
   };
 
 

@@ -1,0 +1,28 @@
+/* 载入页（全屏纯色）：启动载入从页面首帧就在，所以优先铺满视口，不留在 body 的缩放层里 */
+#loadpageRoot { position: fixed; inset: 0; z-index: 300; display: grid; place-items: center; background: var(--bg); opacity: 1; transition: none; visibility: visible; }
+#loadpageRoot.is-out { opacity: 0; visibility: hidden; pointer-events: none; }
+/* 退场结束后脚本直接移除这个节点：淡出只做透明度，不再多挂一条 visibility 过渡的时间轴，
+   否则在它消失之后，下面那层界面还得顺着这条时间轴才肯露面 */
+#loadpageRoot.go { transition: opacity .42s var(--ease); }
+.ldp-stage { display: flex; flex-direction: column; align-items: center; gap: 14px; width: min(460px, calc(100vw - 56px)); padding: 0 8px; }
+.ldp-logo { width: 88px; height: 88px; object-fit: contain; animation: ldpLogo .5s var(--spring) both; }
+@keyframes ldpLogo { from { opacity: 0; transform: scale(.88); } to { opacity: 1; transform: none; } }
+.ldp-title { font-size: 25px; font-weight: 900; letter-spacing: 3px; color: var(--navy); }
+.ldp-edition { margin-top: -8px; font-size: 13px; font-weight: 700; letter-spacing: 2px; color: var(--accent); }
+.ldp-meta { margin-top: -6px; font-size: 11.5px; letter-spacing: .3px; color: var(--faint); }
+.ldp-prog { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 4px; }
+.ldp-bar { flex: 1; min-width: 0; height: 6px; border-radius: 999px; background: rgba(27, 54, 92, .14); box-shadow: inset 0 0 0 1px rgba(27, 54, 92, .10); overflow: hidden; }
+:root[data-theme="dark"] .ldp-bar { background: rgba(255, 255, 255, .14); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08); }
+.ldp-bar > i { display: block; width: 0; height: 100%; border-radius: 999px; background: var(--grad); box-shadow: 0 0 10px rgba(47, 111, 168, .45); transition: width .16s linear; }
+.ldp-pct { flex: none; min-width: 38px; text-align: right; font-size: 12px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ldp-tip { width: 100%; min-height: 0; text-align: center; }
+.ldp-tips { display: flex; flex-direction: column; align-items: center; gap: 5px; width: 100%; animation: ldpTip .34s var(--ease) both; }
+@keyframes ldpTip { from { opacity: 0; } to { opacity: 1; } }
+.ldp-tip-i { font-size: 13px; line-height: 1.7; color: var(--muted); }
+.ldp-tip-a { margin-left: 6px; font-weight: 600; color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+.ldp-tip-a:hover { border-bottom-color: var(--accent); }
+@media (prefers-reduced-motion: reduce) {
+  .ldp-logo, .ldp-tips { animation: none; }
+  .ldp-bar > i { transition: none; }
+  .loadpage, #loadpageRoot, #loadpageRoot.go { transition-duration: .01ms; }
+}

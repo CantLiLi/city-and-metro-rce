@@ -203,6 +203,8 @@
   CM.loadProgress = function (p, label) { ui.loadProgress(p, label); };
   let loading = null;
   CM.isLoading = function () { return loading !== null; };
+  // 载入中被用户放弃：拆掉超时与进度回调并让生成器收尾，主菜单随即交还
+  CM.cancelLoad = cancelLoad;
   function cancelLoad() {
     const job = loading;
     if (!job) return;
@@ -214,18 +216,35 @@
   function runLoad(mapId, message, makeGen, isNew, what) {
     if (loading) return;   // 包括尚未开始的延时任务，防止快速重复点击启动两次载入
     const prev = CM.game;
-    const job = loading = { gen: null, timer: null, mapId: CM.mapId, prevRetired: prev && prev.model && prev.model.retired };
+    const job = loading = { gen: null, timer: null, poll: null, mapId: CM.mapId, prevRetired: prev && prev.model && prev.model.retired };
+    // 载入期间整屏是进度页，没有需要保帧的动画：每片给足时间，省掉一次次宏任务往返。
+    // 调度优先用 MessageChannel（setTimeout 的嵌套计时器会被钳到 4ms，等于白等）。
+    const SLICE = 40;
+    const makeTick = function (fn) {
+      if (typeof MessageChannel === 'function') {
+        const ch = new MessageChannel(), box = { ch: ch, fn: fn };
+        ch.port1.onmessage = function () { box.fn(); };
+        job.ticks = job.ticks || [];
+        job.ticks.push(ch);
+        return function (delay) { if (delay > 0) { job.timer = setTimeout(function () { box.fn(); }, delay); } else { ch.port2.postMessage(0); } };
+      }
+      return function (delay) { job.timer = setTimeout(fn, delay || 0); };
+    };
     if (prev && prev.model) prev.model.retired = true;
-    if (CM.CarPool) CM.CarPool.onReq = null;
-    ui.showLoading(message, isNew ? (message.includes('推演') ? 'pre' : 'new') : 'load', mapId);
+    const show = function () { ui.showLoading(message, isNew ? (message.includes('推演') ? 'pre' : 'new') : 'load', mapId); };
+    const detach = function () {
+      clearTimeout(job.timer); clearTimeout(job.poll); job.timer = job.poll = null;
+      if (job.ticks) { for (const ch of job.ticks) { try { ch.port1.onmessage = null; ch.port1.close(); ch.port2.close(); } catch (e) { /* 已关闭 */ } } job.ticks = null; }
+      if (CM.CarPool) CM.CarPool.clearHooks(job.resume);
+    };
     const end = function () {
-      clearTimeout(job.timer);
-      if (CM.CarPool && CM.CarPool.onReq === job.resume) CM.CarPool.onReq = null;
+      detach();
       loading = null;
     };
+    let schedule = null;
     const step = function () {
       if (loading !== job) return;
-      clearTimeout(job.timer);
+      clearTimeout(job.timer); clearTimeout(job.poll); job.timer = job.poll = null;
       try {
         if (!job.gen) { CM.useMap(mapId); job.gen = makeGen(); }
         const t0 = performance.now();
@@ -233,16 +252,17 @@
           const r = job.gen.next();
           if (r.done) {
             job.gen = null;
-            if (CM.CarPool && CM.CarPool.onReq === job.resume) CM.CarPool.onReq = null;
+            detach();
+            ui.loadDone('准备就绪');
             ui.finishLoading(function () { if (loading !== job) { if (r.value.model) r.value.model.retired = true; return; } end(); start(r.value, isNew); });
             return;
           }
           if (r.value === CM.SIM_WAIT) {
-            if (CM.CarPool) CM.CarPool.onReq = job.resume;
-            job.timer = setTimeout(step, 100);   // 后台标签页或异常环境下仍可继续检查回退状态
+            if (CM.CarPool) { CM.CarPool.onReq = job.resume; CM.CarPool.onBlock = job.resume; }
+            job.poll = setTimeout(step, 8);   // 单块完成会立刻唤醒；8ms 兜底轮询只为覆盖线程回退等异常情况
             return;
           }
-          if (performance.now() - t0 >= 8) { job.timer = setTimeout(step, 0); return; }
+          if (performance.now() - t0 >= SLICE) { schedule(0); return; }
         }
       } catch (e) {
         if (job.gen) job.gen.return();
@@ -255,16 +275,21 @@
         fail(e, what);
       }
     };
-    job.resume = function () { if (loading === job) { clearTimeout(job.timer); job.timer = setTimeout(step, 0); } };
-    job.timer = setTimeout(step, Math.max(60, (ui._zoomUntil || 0) - performance.now()));
+    schedule = makeTick(step);
+    job.resume = function () { if (loading !== job || job.timer) return; schedule(0); };
+    // 选地图进游戏要先放地图动效：等动效走完再盖载入页，否则纯色一压下去，动效还没开始就看不见了。
+    // 读档是直接回到已有城市，没有这段动效，立刻起跑。
+    job.timer = setTimeout(function () { show(); step(); }, isNew ? Math.max(60, (ui._zoomUntil || 0) - performance.now()) : 0);
   }
-  // opts.map：地图（默认广州）；opts.tutorial：新手教程
+  // 新建游戏。载入页整屏纯色盖在上方，后面的界面在载入过程中就注册好并跑在它下面，
+  // 等纯色淡开时露出来的已经是画好的游戏画面与 HUD。opts.map 缺省为广州；opts.tutorial 为新手教程
   CM.newGame = function (opts) {
     ui._slotLoadRequest = null;
     if (CM.Soundscape) CM.Soundscape.reset();
     const mp = CM.MAPS[opts.map] || CM.MAPS.gz;
     runLoad(mp.id, opts.startYear > mp.cfg.START.y ? '从 ' + mp.cfg.START.y + ' 年推演到 ' + opts.startYear + ' 年的' + mp.data.city : '正在生成 ' + mp.cfg.START.y + ' 年的' + mp.data.city + '，并计算居民出行…', function () { return CM.Game.createGen(opts); }, true, '创建新游戏');
   };
+  // 载入存档：与开局同样先交给启动/载入页，读档不必等地图动效，载入页本来就盖在上面
   CM.loadGame = function (data) {
     if (CM.Soundscape) CM.Soundscape.reset();
     runLoad((data.meta && data.meta.map) || 'gz', '正在载入存档并恢复城市与交通状态…', function () { return CM.Game.restoreGen(data); }, false, '载入存档');
@@ -301,8 +326,37 @@
     previewCamera(0);
   };
 
-  let last = performance.now(), fpsAcc = 0, fpsN = 0;
+  // 实测显示器刷新率：跳过启动初期的抖动，取 40 个 rAF 间隔的中位数（设置里的帧率档位据此生成）
+  (function measureRefresh() {
+    const gaps = [];
+    let prev = 0, skip = 10;
+    function step(t) {
+      if (skip > 0) { skip--; prev = t; requestAnimationFrame(step); return; }
+      if (prev) gaps.push(t - prev);
+      prev = t;
+      if (gaps.length < 40) { requestAnimationFrame(step); return; }
+      const med = gaps.sort(function (a, b) { return a - b; })[gaps.length >> 1];
+      if (med > 1) CM.refreshHz = Math.round(1000 / med);
+    }
+    requestAnimationFrame(step);
+  })();
+
+  let last = performance.now(), fpsAcc = 0, fpsN = 0, frameDue = 0;
+  // 帧率上限（设置「画面 → 帧率上限」）：垂直同步即不额外等待，随 rAF 跟显示器刷新率；
+  // 指定数值时按「下一帧的应绘时刻」累积，而不是按 rAF 回调间隔取整：144Hz 屏上要 120 帧
+  // 必须连画几帧再跳一帧，按回调间隔取整只会在 72 帧上下徘徊。
+  function frameInterval() {
+    const f = CM.Settings && CM.Settings.get('fps');
+    if (f === 'vsync') return 0;
+    const n = Number(f);
+    return isFinite(n) && n > 0 ? 1000 / n : 0;
+  }
   function frame(t) {
+    const cap = frameInterval();
+    // 0.5ms 容差用来吃掉 rAF 时间戳抖动，免得整数间隔被误判成漏一帧
+    if (cap && t < frameDue - 0.5) { requestAnimationFrame(frame); return; }
+    // 落后超过一帧就重新对齐：积压只表现为偶尔连绘，不会越拖越远
+    frameDue = cap ? Math.max(t, frameDue + cap) : 0;
     const workStarted = performance.now();
     R.frameWorkStart = workStarted;
     const dt = Math.min(0.1, Math.max(0, (t - last) / 1000));
@@ -330,13 +384,43 @@
   }
   window.addEventListener('beforeunload', function () { if (!loading && CM.game && !ui.isSaved()) ui.doAutosave(); });
   window.addEventListener('resize', function () { R.resize(); });
+  // 桌面版关窗由宿主通知页面，存档写完后再回应，宿主才真正结束进程。
+  // 宿主的 window.pywebview 可能晚于本脚本注入，因此按 ready 结果再决定要不要挂关窗钩子。
+  const bindDesktopClose = function () {
+    if (!CM.DESKTOP) return;
+    CM.DESKTOP.onClose(function () {
+      const save = (!loading && CM.game && !ui.isSaved()) ? ui.doAutosave(true) : Promise.resolve();
+      return Promise.resolve(save).then(function () { return CM.Save.flush(); });
+    });
+    if (CM.onCloseRequest) CM.onCloseRequest();
+    ui.watchCrashSave();
+  };
+  if (window.pywebview || window.__CM_DESKTOP_) bindDesktopClose();
+  else window.addEventListener('pywebviewready', bindDesktopClose);
 
   R.resize();
   R.cam.zoom = R.cam.tz = 17; R.cam.view = 1; R.cam.t = 1; previewCamera(0);
   requestAnimationFrame(frame);
   // 先显示开始界面，再在下一帧之后生成背景城市，地图淡入（打开不卡顿）
   canvas.classList.add('map-intro');
-  CM.Save.init().then(function () { ui.showStart(); }, function () { ui.showStart(); });
+  // 启动载入页（首帧就在，见 index.html 的 #loadpageRoot）：等开始界面的背景城市画好，再把整屏纯色的载入页淡出
+  const bootAt = performance.now(), bootMin = CM.Settings.reducedMotion() ? 0 : 900;
+  let bootDone = false;
+  if (CM.LoadPage) CM.LoadPage.show('正在准备城市与地图…', 'boot');
+  const bootOut = function (go) {
+    if (bootDone) return;
+    bootDone = true;
+    if (!CM.LoadPage || !CM.LoadPage.visible()) { go(); return; }
+    CM.LoadPage.set(0.92, '即将进入');
+    setTimeout(function () { CM.LoadPage.hide(go); }, Math.max(0, bootMin - (performance.now() - bootAt)));   // 补满进度、整屏淡出之后才显示开始界面
+  };
+  CM.Save.init().then(function () { bootOut(function () { ui.showStart(); }); }, function () { bootOut(function () { ui.showStart(); }); });
+  // 桌面存档清单可能比页面晚一步就绪（宿主的 window.pywebview 注入更晚）：等启动载入退场后，开始界面按真实存档列表重画
+  window.addEventListener('cm-saves-ready', function () {
+    if (CM.game || loading || !bootDone) return;
+    if (!ui.screen || !/\bstart\b/.test(ui.screen.className)) return;
+    ui.showStart();
+  });
   setTimeout(function () {
     if (loading) return;   // 当前配置已属于载入中的城市，不能用它生成广州菜单背景
     if (!preview) { try { preview = makePreview(); } catch (e) { console.error(e); } }

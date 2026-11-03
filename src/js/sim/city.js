@@ -36,8 +36,10 @@
   const FS = 4;   // 水域、绿地栅格：每格 4×4 子像素（约 62 m）
   const BS = 8;   // 建筑避让栅格：每格 8×8 子像素（约 31 m）
   // opts.densityScale：人口中心密度（按开局年标定）放大的倍数，只影响「是否已城市化」的判断（地图扩展迁移按存档年份生成新增范围时使用）
+  // opts.restore：读档路径。人口 / 就业 / 建筑高度与道路等级随后由 City.prototype.restore 从存档恢复，
+  // 这里省掉会被覆盖的那几轮全图计算（约占总生成时间的一半以上），结果与完整生成后立刻 restore 一致。
   City.prototype.generate = function (seed, startYear, opts) {
-    const W = this.W, H = this.H, N = this.N, ds = (opts && opts.densityScale) || 1;
+    const W = this.W, H = this.H, N = this.N, ds = (opts && opts.densityScale) || 1, restoreOnly = !!(opts && opts.restore);
     this.seed = seed;
     this.regions = D.regions.concat([D.defaultRegion]);
     this.regionOpen = new Uint8Array(this.regions.length);
@@ -75,6 +77,7 @@
     this.activateLandmarks(startYear);
 
     // 1990 年人口与就业（估算）
+    if (!restoreOnly) {
     let sumP = 0, sumJ = 0;
     for (let c = 0; c < N; c++) {
       const L = this.lu[c];
@@ -105,6 +108,7 @@
     const tP = U.interp(CFG.growth.popCurve, startYear), tJ = tP * U.interp(CFG.growth.jobsRatio, startYear);
     for (let c = 0; c < N; c++) { this.pop[c] *= tP / sumP; this.jobs[c] *= tJ / sumJ; }
     for (let c = 0; c < N; c++) this.bh[c] = this.heightFor(c, startYear);
+    }
 
     // 道路格网顶点（规则方格；真实道路在其上近似通行，绘制使用真实线形）
     this.vx = new Float32Array(this.V); this.vy = new Float32Array(this.V);
@@ -121,8 +125,7 @@
     this.eBlock = new Uint8Array(nTot); // 跨水
     for (let e = 0; e < nTot; e++) this.eBlock[e] = this.edgeBlock(e);
     this.buildRoadGroups();
-    this.applyRoads(startYear);
-    this.updateStreets();
+    if (!restoreOnly) { this.applyRoads(startYear); this.updateStreets(); }
     if (!opts || !opts.deferGraphs) this.buildGraphs();
     this.version++;
   };

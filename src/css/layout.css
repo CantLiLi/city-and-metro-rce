@@ -1,8 +1,11 @@
 /* 城市与地铁 · 界面框架：顶部 HUD、左侧视图与图层、右下缩放、底部建设工具 */
 
 /* ---------- 顶部 HUD ---------- */
-/* 界面大小：HUD 各部件按 --uiz 缩放，涉及视口尺寸的值除以 --uiz 抵消 */
-#hudTop, #dock, #legendCard, #zoomCtl, #rightPanel, #toolbar, #buildStack, #feed { zoom: var(--uiz, 1); }
+/* 界面大小：整个界面层 #app 统一按 --uiz 缩放，所有组件一起变化；涉及视口尺寸的值除以 --uiz 抵消 */
+/* #app 自身也要铺满视口（按缩放后的等效尺寸），否则内部 position: fixed 的组件会以 #app 为包含块而错位 */
+/* #app 只是定位与缩放的容器，本身不接收指针事件，避免盖住地图；装饰层（#fxLayer、#uitip 等）同样不接收，其余组件恢复交互 */
+#app { zoom: var(--uiz, 1); position: fixed; inset: 0; width: calc(100vw / var(--uiz, 1)); height: calc(100dvh / var(--uiz, 1)); pointer-events: none; }
+#app > :not(#fxLayer, #uitip, #tooltip, .viewport-insets) { pointer-events: auto; }
 #hudTop { top: 12px; left: 12px; right: 12px; display: flex; gap: 10px; align-items: flex-start; pointer-events: none; }
 #hudTop > * { pointer-events: auto; }
 #hudTop.hidden { transform: translateY(-14px); }

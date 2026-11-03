@@ -4339,29 +4339,25 @@
     const step = (this.dt || 0.016) / 0.25;
     const labA = U.clamp((this.labA == null ? (this.labelsOn ? 1 : 0) : this.labA) + (this.labelsOn ? step : -step), 0, 1);
     const mapLabA = U.clamp((this.mapLabA == null ? (this.mapLabelsOn !== false ? 1 : 0) : this.mapLabA) + (this.mapLabelsOn !== false ? step : -step), 0, 1);
-    // 文字内容与缩放决定整层位图；相机平移只是整体位移，用 drawImage 重新定位，不重排站名
-    const key = [this.w, this.h, this.dpr, this.z, this.hs, this.M.join(','), this.cam.under > 0.5, this.tEase > 0.5, this.bFade > 0.5, this.game.city.version, this.game.netVersion, this.layer, labA > 0.001 && labA < 0.999, mapLabA > 0.001 && mapLabA < 0.999, this.themeName, AX.flag(), document.fonts ? document.fonts.status : '', this.layerSig()].join('|');
+    // 文字内容按屏幕坐标排成整层位图：缩放、主题、图层与相机位置决定内容
+    const key = [this.w, this.h, this.dpr, this.z, this.ox, this.oy, this.hs, this.M.join(','), this.cam.under > 0.5, this.tEase > 0.5, this.bFade > 0.5, this.game.city.version, this.game.netVersion, this.layer, labA > 0.001 && labA < 0.999, mapLabA > 0.001 && mapLabA < 0.999, this.themeName, AX.flag(), document.fonts ? document.fonts.status : '', this.layerSig()].join('|');
     let image = this.labelImage;
     if (!image || image.key !== key || image.C !== this.drawnC) {
       if (this.lastLabelKey !== key || this.lastLabelC !== this.drawnC) {
         this.lastLabelKey = key; this.lastLabelC = this.drawnC;
-        this.drawLabelContent(ctx, ui, 0, 0); return;
+        this.drawLabelContent(ctx, ui); return;
       }
       const cv = image && image.cv.width === this.cv.width && image.cv.height === this.cv.height ? image.cv : makeCanvas(this.cv.width, this.cv.height);
       const x = cv.getContext('2d');
       x.setTransform(1, 0, 0, 1, 0, 0); x.clearRect(0, 0, cv.width, cv.height); x.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-      this.drawLabelContent(x, ui, this.ox, this.oy);
-      image = this.labelImage = { key: key, C: this.drawnC, cv: cv, ox: this.ox, oy: this.oy };
+      this.drawLabelContent(x, ui);
+      image = this.labelImage = { key: key, C: this.drawnC, cv: cv };
     } else { this.labA = labA; this.mapLabA = mapLabA; }
-    const dx = this.ox - image.ox, dy = this.oy - image.oy;
-    if (dx || dy) ctx.drawImage(image.cv, 0, 0, this.w, this.h, dx, dy, this.w, this.h);
-    else ctx.drawImage(image.cv, 0, 0, this.w, this.h);
+    ctx.drawImage(image.cv, 0, 0, this.w, this.h);
   };
-  Renderer.prototype.drawLabelContent = function (ctx, ui, ox, oy) {
+  Renderer.prototype.drawLabelContent = function (ctx, ui) {
     const g = this.game, z = this.z, v = this.view, city = g.city;
     if (g.preview) return;   // 开始界面背景不显示标注
-    // 排版坐标以 (ox, oy) 为原点：空间关系与投影无关，整层可平移复用
-    const PX = ox || 0, PY = oy || 0;
     // 标注开关渐隐渐现（不闪切）
     const step = (this.dt || 0.016) / 0.25;
     this.labA = U.clamp((this.labA == null ? (this.labelsOn ? 1 : 0) : this.labA) + (this.labelsOn ? step : -step), 0, 1);
@@ -4399,9 +4395,9 @@
         if (old.length >= 3 || U.dist(arr[0], arr[1], arr[arr.length - 2], arr[arr.length - 1]) < 70) continue;
         const label = AX.number(line), w = Math.max(22, ctx.measureText(label).width + 10), col = AX.line(line);
         for (const f of [0.5, 0.7, 0.3]) {
-          const i = Math.round((arr.length / 2 - 1) * f) * 2, x = arr[i] - PX, y = arr[i + 1] - PY;
+          const i = Math.round((arr.length / 2 - 1) * f) * 2, x = arr[i], y = arr[i + 1];
           if (x < w || x > this.w - w || y < 15 || y > this.h - 15 || old.some(function (p) { return U.dist(x, y, p[0], p[1]) < 190; })) continue;
-          if (this.stPx && this.stPx.some(function (p) { return p && U.dist(x + PX, y + PY, p.x, p.y) < 26; })) continue;
+          if (this.stPx && this.stPx.some(function (p) { return p && U.dist(x, y, p.x, p.y) < 26; })) continue;
           if (!fits(x - w / 2 - 3, y - 12, x + w / 2 + 3, y + 12)) continue;
           ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x - w / 2, y - 9, w, 18, 6); else ctx.rect(x - w / 2, y - 9, w, 18);
           ctx.fillStyle = col; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
@@ -4412,7 +4408,7 @@
     }
     const busyLayer = this.layer === 'cong' || this.layer === 'flow' || this.layer === 'station' || this.layer === 'fac' || this.layer === 'gap';   // 分析图层隐藏区名与未开放区域，站名尽量避让显示
     const lr = busyLayer && this._layerRectsFor === this.layer ? this._layerRects : null;
-    if (lr) for (const b of lr) occupy(b[0] - PX, b[1] - PY, b[2] - PX, b[3] - PY);
+    if (lr) for (const b of lr) occupy(b[0], b[1], b[2], b[3]);
     const named = this.layer === 'station' && this._layerRectsFor === 'station' ? this._layerNamed : null;
     if (C && this.stPx && z >= 8.5 && this.labA > 0.01) {
       ctx.globalAlpha = this.labA;
@@ -4422,7 +4418,7 @@
       order.sort(function (a, b) { return (C.stationLines[b[1]].size - C.stationLines[a[1]].size) || ({ L: 2, M: 1, S: 0 }[C.stations[b[1]].size] - { L: 2, M: 1, S: 0 }[C.stations[a[1]].size]); });
       for (const it of order) {
         const p0 = it[0], s = C.stations[it[1]];
-        const p = { x: p0.x - PX, y: p0.y - PY, r: p0.r };
+        const p = { x: p0.x, y: p0.y, r: p0.r };
         if (s.portal && CM.Fac && CM.Fac.isPortalStation(s) && this.layer === 'none' && this.cam.under < 0.5) continue;
         if (named && named.has(s.id)) continue;
         const w = this.textWidth(ctx, s.name);
@@ -4449,7 +4445,6 @@
         if (lm.x < v.x0 || lm.x > v.x1 || lm.y < v.y0 || lm.y > v.y1) continue;
         const h = this.tEase > 0.5 && this.bFade > 0.5 ? (lm.h ? lm.h * EX : 34 * EX * 1.6) : 0;
         const p = this.P(lm.x, lm.y, h);
-        p.x -= PX; p.y -= PY;
         ctx.font = '11px ' + FONT;
         const text = '◆ ' + lm.name;
         const w = this.textWidth(ctx, text);
@@ -4476,7 +4471,6 @@
         const len = geom.len;
         if (len < 2.4) continue;
         const pt = this.P(geom.x, geom.y, 0);
-        pt.x -= PX; pt.y -= PY;
         if (pt.x < 0 || pt.y < 0 || pt.x > this.w || pt.y > this.h) continue;
         const text = gr.name;
         const tw = this.textWidth(ctx, text);
@@ -4489,7 +4483,6 @@
       const a = U.clamp((16 - z) / 5, 0, 1) * 0.75;
       for (const dl of (city.districtLabels || [])) {
         const p = this.P(dl[1], dl[2], 0), font = '600 ' + (z < 9 ? 15 : 17) + 'px ' + FONT;
-        p.x -= PX; p.y -= PY;
         ctx.globalAlpha = a * this.mapLabA;
         halo(dl[0], p.x, p.y, font, TH.district, 'center');
         // 占位：之后的未开放区域标签避开区名
@@ -4507,14 +4500,13 @@
         const cx = lock.info[k].x, cy = lock.info[k].y;
         if (cx < v.x0 || cx > v.x1 || cy < v.y0 || cy > v.y1) continue;
         const p = this.P(cx, cy, 0);
-        p.x -= PX; p.y -= PY;
         const text = '🔒 ' + rg.name.replace(/（.*）/, '') + ' · ' + city.lockText(city.cellAt(cx, cy));
         ctx.font = '11px ' + FONT;
         const w = this.textWidth(ctx, text);
         // 靠近地图边缘的区域：标签整体收进地图范围，不越出边界
-        const xl = this.P(0, cy, 0).x - PX + w / 2 + 6, xr = this.P(CFG.W, cy, 0).x - PX - w / 2 - 6;
+        const xl = this.P(0, cy, 0).x + w / 2 + 6, xr = this.P(CFG.W, cy, 0).x - w / 2 - 6;
         if (xl <= xr) p.x = U.clamp(p.x, xl, xr);
-        const yt = this.P(cx, 0, 0).y - PY + 12, yb = this.P(cx, CFG.H, 0).y - PY - 12;
+        const yt = this.P(cx, 0, 0).y + 12, yb = this.P(cx, CFG.H, 0).y - 12;
         if (yt <= yb) p.y = U.clamp(p.y, yt, yb);
         if (!fits(p.x - w / 2, p.y - 8, p.x + w / 2, p.y + 8)) continue;
         halo(text, p.x, p.y, '11px ' + FONT, TH.lockInk, 'center');

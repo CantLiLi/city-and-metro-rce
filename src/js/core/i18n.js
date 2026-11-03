@@ -3,7 +3,7 @@
 (function(CM){
   const allowed=['zh-CN','zh-TW','en'],hasHan=s=>/[\u3400-\u9fff]/.test(s),cache=new Map(),sources=new WeakMap(),attrs=new WeakMap(),listeners=new Set();
   let language='zh-CN',traditional=null,namesReady=false,trie=null,templates=null;
-  try{const s=JSON.parse(localStorage.getItem('cm1.settings')||'null');if(s&&allowed.includes(s.language))language=s.language;}catch(e){/* settings unavailable */}
+  try{const s=JSON.parse((CM.DESKTOP?CM.DESKTOP.localStorage.get('cm1.settings'):localStorage.getItem('cm1.settings'))||'null');if(s&&allowed.includes(s.language))language=s.language;}catch(e){/* settings unavailable */}
   const en=CM.I18N_EN||Object.create(null),names=new Map(),nameLengths=new Map(),missing=new Set();
   const compactFormat=new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:2});
   function sanitize(s){return s.replace(/笕桥机场(?:[（(]军用[）)])?/g,'城东片区').replace(/王家墩机场(?:[（(]军用[）)])?/g,'王家墩片区').replace(/军用机场[^，。；\n]*/g,'未开发用地');}
