@@ -26,7 +26,8 @@
   // 求解生成器在等待工作线程时让出的值：外层循环（实时求解、跳月、预测）见到它就不再空转，让工作线程的结果消息先进来
   const WAIT = CM.SIM_WAIT = Object.freeze({ wait: true });
   // 同时交错执行的时段数（v2.1）：一个时段等汽车分配时，主线程先算其他时段的地铁路径与方式选择
-  const PIPE_W = 2;
+  // 每个时段独占一套缓冲区，路网与需求只读；4 即工作/周末 × 4 个时段全并行，等线程时主线程不空转
+  const PIPE_W = 4;
   function carTree(G, time, origin, W) {
     const dist = W.dist, dkm = W.dkm, pred = W.pred, order = W.order, keys = W.heapK, values = W.heapV;
     const start = G.start, node = G.nodes, initial = G.times, km = G.km;
@@ -146,16 +147,30 @@
         for (let i = 0; i < this.size(); i++) {
           const w = new Worker(url), slot = { w: w, n: 0, gid: 0 };
           w.onmessage = function (e) { self.done(slot, e.data); };
-          w.onerror = function (e) { if (e && e.preventDefault) e.preventDefault(); self.fail('工作线程出错：' + ((e && e.message) || '未知错误')); };
-          w.onmessageerror = function () { self.fail('工作线程消息无法读取'); };
+          w.onerror = function (e) { if (e && e.preventDefault) e.preventDefault(); self.fail('工作线程出错：' + ((e && e.message) || '未知错误'), slot); };
+          w.onmessageerror = function () { self.fail('工作线程消息无法读取', slot); };
           this.list.push(slot);
         }
         return true;
       } catch (e) { this.fail(String(e && e.message || e)); return false; }
       finally { if (url) URL.revokeObjectURL(url); }
     },
-    fail: function (why) {
+    fail: function (why, slot) {
       if (this.off) return;
+      // 单个线程运行中出错：只淘汰该线程，其余线程与排队块继续用工作线程算
+      if (slot && this.list && this.list.length > 1) {
+        const i = this.list.indexOf(slot);
+        if (i >= 0) {
+          this.list.splice(i, 1);
+          try { slot.w.terminate(); } catch (e) { /* 已结束 */ }
+          // 该线程手上的块没有回音：退回队列，由存活线程继续算
+          if (slot.n > 0) slot.n = 0;
+          this.pump();
+          if (typeof console !== 'undefined') console.warn('交通求解工作线程已退出，其余线程继续：' + why);
+          this.notify();
+          return;
+        }
+      }
       this.off = true; this.why = why;
       if (this.list) for (const s of this.list) { try { s.w.terminate(); } catch (e) { /* 已结束 */ } }
       this.list = null;
@@ -199,7 +214,7 @@
           if (s.gid !== t.req.G.id) { const msg = { type: 'graph', G: t.req.G, kernel: CM.RoadKernel && CM.RoadKernel.module }; try { s.w.postMessage(msg); } catch (e) { msg.kernel = null; s.w.postMessage(msg); } s.gid = t.req.G.id; }
           s.n++;
           s.w.postMessage({ type: 'block', req: t.req.id, b: t.b, gid: t.req.G.id, time: t.req.time, origins: t.origins, dem: t.dem }, [t.dem.buffer]);
-        } catch (e) { this.fail('工作线程消息发送失败：' + (e && e.message || e)); return; }
+        } catch (e) { this.fail('工作线程消息发送失败：' + (e && e.message || e), s); return; }
       }
     },
     done: function (slot, m) {
@@ -1506,6 +1521,8 @@
     if(!jobs.length)return;
     const width = this.syncSolve || !CarPool.ready() ? 1 : Math.min(PIPE_W, jobs.length);
     const bufs = pred ? (this.predBufs || (this.predBufs = [this.predBuf])) : (this.pipeBufs || (this.pipeBufs = [this.liveBuf]));
+    // 每个并行时段各自一套缓冲区；第 0 套沿用 liveBuf / predBuf，其余按需创建
+    for (let s = bufs.length; s < width; s++) bufs.push({});
     const act = [], free = [];
     for (let s = width - 1; s >= 0; s--) free.push(s);
     let next = 0;
@@ -1586,12 +1603,17 @@
     cycles=Math.max(1,Math.min(12,cycles||2));this.wake(cycles);dts=dts||DT;
     const self=this;this.solving=(this.solving||0)+1;
     try{
+      let prev=null;   // 上一轮各时段的误差：再迭代已无改善就收手，别把同样的收敛花两遍
       for(let c=0;c<cycles;c++){
         const jobs=[];for(const dt of dts)for(let p=0;p<NP;p++)if(this.needsWork(this.ctxs[dt].per[p],cycles))jobs.push([dt,p]);
         if(!jobs.length)break;
         yield* this.pipeline(jobs,(j,buf)=>self.iterate(self.net,self.ctxs[j[0]].per[j[1]],j[1],{fullSkim:c===0,buf,noSmooth:true}));
         this.cycles++;
         if(this.onSolveProgress)this.onSolveProgress((c+1)/cycles);   // 载入界面的进度（每完成一轮）
+        if(this.solveLimit<=1)break;   // 只要求一轮（普通月份）时不额外判断，保持原有节奏
+        const now=[];for(const dt of dts)for(let p=0;p<NP;p++){const e=this.ctxs[dt].per[p].error;if(e)now.push(e.time+e.gap+e.metro+e.demand);}
+        if(prev&&now.length===prev.length){let imp=0;for(let i=0;i<now.length;i++)if(prev[i]-now[i]>1e-4)imp++;if(!imp)break;}
+        prev=now;
       }
       if(DT.every(dt=>this.ctxs[dt].per.every(P=>this.periodUsable(P))))this.finishTraffic();else{this.computeDaily();this.gen=null;}
     }finally{this.solving--;}
@@ -1736,6 +1758,7 @@
     const a = this.profile[(h0 + 24) % 24], b = this.profile[(h0 + 25) % 24];
     return a + (b - a) * t;
   };
+  // 每帧被多处调用：复用同一对象，避免高频堆分配（调用方只读，不保存引用）
   Model.prototype.weights = function (minute) {
     const m = ((minute % 1440) + 1440) % 1440;
     const hr = Math.floor(m / 60);
@@ -1746,7 +1769,11 @@
     else if (frac < 0.25) { const pp = this.hourPeriod[(hr + 23) % 24]; if (pp !== p0) { p1 = pp; w1 = (0.25 - frac) / 0.5; } }
     const prof = this.profileAt(m);
     const w0 = 1 - w1;
-    return { p0: p0, w0: w0, s0: prof / this.pMean[p0], p1: p1, w1: w1, s1: prof / this.pMean[p1], svc: (m >= 360 || m < 5) ? 1 : 0, prof: prof };
+    const W = this._w || (this._w = { p0: 0, w0: 1, s0: 1, p1: 0, w1: 0, s1: 1, svc: 1, prof: 1 });
+    W.p0 = p0; W.w0 = w0; W.s0 = prof / this.pMean[p0];
+    W.p1 = p1; W.w1 = w1; W.s1 = prof / this.pMean[p1];
+    W.svc = (m >= 360 || m < 5) ? 1 : 0; W.prof = prof;
+    return W;
   };
   Model.prototype.arcVolAt = function (a, W) {
     const live=this.resultsFor(this.dayType),P0=live.per[W.p0],P1=live.per[W.p1];
@@ -1757,14 +1784,21 @@
     return Math.min(8, 1 + CFG.road.bprA * x * x * x * x);
   };
   Model.prototype.cityCongAt = function (W) {
+    const live = this.resultsFor(this.dayType);
+    const sig = this.dayType + '|' + W.p0 + '|' + W.p1 + '|' + W.w0.toFixed(3) + '|' + W.s0.toFixed(3) + '|' + W.w1.toFixed(3) + '|' + W.s1.toFixed(3);
+    if (this._congSig === sig && this._congCache != null) return this._congCache;
     const road = this.road; let num = 0, den = 0;
     const capF = this.capF || 1;
+    const a0 = live.per[W.p0].arcVol, a1 = live.per[W.p1].arcVol;
+    const k0 = W.w0 * W.s0, k1 = W.w1 * W.s1, A = CFG.road.bprA;
     for (let a = 0; a < road.nA; a++) {
-      const v = this.arcVolAt(a, W); if (v <= 0) continue;
-      const x = v / (road.arcCap[a] * capF);
-      num += v * road.arcLen[a] * Math.min(8, 1 + CFG.road.bprA * x * x * x * x); den += v * road.arcLen[a];
+      const v = a0[a] * k0 + a1[a] * k1; if (v <= 0) continue;
+      const x = v / (road.arcCap[a] * capF), x2 = x * x, len = road.arcLen[a];
+      num += v * len * Math.min(8, 1 + A * x2 * x2); den += v * len;
     }
-    return den > 0 ? num / den : 1;
+    const out = den > 0 ? num / den : 1;
+    this._congSig = sig; this._congCache = out;
+    return out;
   };
   // 线路最低服务水平（列/小时）：车站越多、站距越小的城区线越密，站距大的郊区线较疏；非环线保证至少 2 列车在线运行
   Model.serviceFloor = function (rt, p) {

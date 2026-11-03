@@ -196,7 +196,11 @@
         }
       }
     }
-    this.trains = this.trains.filter(function (t) { return !(t.dying && t.alpha <= 0); });
+    // 原地压缩：只在新数组里放存活列车，避免每帧 malloc 一个新数组
+    const tr = this.trains;
+    let k = 0;
+    for (let i = 0; i < tr.length; i++) { const t = tr[i]; if (!(t.dying && t.alpha <= 0)) tr[k++] = t; }
+    tr.length = k;
   };
   Agents.prototype.trainPos = function (t, out) {
     const g = t.g, L = g.legs[t.leg];
@@ -287,8 +291,11 @@
     let paxBudget = Math.round(CFG.perf.maxRiders * (tier === 1 ? 0.5 : 1));
     const UD = CM.RENDER_CONST.UNDER_DEPTH;
     const joints = this._joints || (this._joints = []);
-    const trainList=R.follow?[R.follow,...this.trains.filter(t=>t!==R.follow)]:this.trains;
-    for (const t of trainList) {
+    // 跟随的列车最后画（压在最上层），无需每帧拼 [follow, ...rest] 新数组
+    const trainList = this.trains, nTr = trainList.length, defer = R.follow;
+    for (let ti = 0; ti <= nTr; ti++) {
+      const t = ti < nTr ? trainList[ti] : defer;
+      if (!t || (t === defer && ti < nTr)) continue;
       if (!t.g || t.alpha <= 0.01) continue;
       const rt = t.g.rt;
       this.trainPos(t, tmp);
@@ -599,24 +606,27 @@
     const bk = this.carBuckets, viewKey = [Math.floor((v.x0 - margin) / bk.tile), Math.floor((v.y0 - margin) / bk.tile), Math.floor((v.x1 + margin) / bk.tile), Math.floor((v.y1 + margin) / bk.tile)].join(':');
     if (!this.visibleRoads || this.visibleRoads.key !== viewKey) this.visibleRoads = { key: viewKey, ids: CM.Geo.query(bk, v.x0 - margin, v.y0 - margin, v.x1 + margin, v.y1 + margin).sort(function (a, b) { return a - b; }) };
     const ids=this.visibleRoads.ids,start=(this.carStart=((this.carStart||0)+37)%Math.max(1,ids.length));
-    // 同一视野保持抽样比例，真实流量下降时不立即补满全局动画名额。
+    // 一趟同时算需求量与生成量：每段的流量/慢行比只算一次，抽样比例变化时重算
+    const nIds = ids.length;
+    if (!this._vlist || this._vlist.length < nIds * 2) this._vlist = new Float32Array(nIds * 2);
+    const volA = this._vlist;
     let wanted=0;
-    for(const id of ids){const L=road.links[id];if(L.cls<2||!L.real||!inView(L))continue;for(let dir=0;dir<2;dir++){const a=2*id+dir,vol=model.arcVolAt(a,W),sp=CFG.road.speed[L.cls]/Math.min(8,model.arcRatioAt(a,W));wanted+=Math.min(L.lenM/1000*30,vol/sp*L.lenM/1000*vis)*density;}}
+    for(let k=0;k<nIds;k++){const id=ids[(start+k)%nIds],L=road.links[id];if(L.cls<2||!L.real||!inView(L)){volA[2*k]=volA[2*k+1]=-1;continue;}
+      for(let dir=0;dir<2;dir++){const a=2*id+dir,vol=model.arcVolAt(a,W);volA[2*k+dir]=vol;if(vol<5)continue;const sp=CFG.road.speed[L.cls]/Math.min(8,model.arcRatioAt(a,W));wanted+=Math.min(L.lenM/1000*30,vol/sp*L.lenM/1000*vis)*density;}}
     const sampleKey=(city.uid||CM.mapId)+':'+viewKey+':'+Math.round(z/3)+':'+(R.detail?R.detail.tier:0)+':'+(W?W.p0+':'+W.p1:'preview');
     if(!this.trafficSample||this.trafficSample.key!==sampleKey)this.trafficSample={key:sampleKey,rate:Math.min(1,maxCars*.9/Math.max(1,wanted))};
     else if(wanted*this.trafficSample.rate>maxCars*1.1)this.trafficSample.rate=maxCars*.9/wanted;
 
-    for (let k=0;k<ids.length;k++) {
-      const id=ids[(start+k)%ids.length];
+    for (let k=0;k<nIds;k++) {
+      const id=ids[(start+k)%nIds];
       const L = road.links[id];
-      if (L.cls < 2 || !L.real || !inView(L)) continue;
+      if (volA[2*k] < 0) continue;
       if (((L.id & 1) === 1) !== step) continue;
       for (let dir = 0; dir < 2; dir++) {
         const a = 2 * L.id + dir;
-        const vol = model.arcVolAt(a, W);
+        const vol = volA[2*k+dir];
         if (vol < 5) continue;
-        const ratio = model.arcRatioAt(a, W);
-        const sp = CFG.road.speed[L.cls] / Math.min(8, ratio);
+        const sp = CFG.road.speed[L.cls] / Math.min(8, model.arcRatioAt(a, W));
         const lenKm = L.lenM / 1000;
         const target = Math.min(lenKm * 30, vol / sp * lenKm * vis) * density * this.trafficSample.rate;
         const list = idx.get(2 * a), slow = idx.get(2 * a + 1);

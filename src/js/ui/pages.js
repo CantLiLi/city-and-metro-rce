@@ -463,8 +463,18 @@
             b.appendChild(rows);
             b.appendChild(h('div', { class: 'small muted', style: { margin: '8px 0 2px' } }, '当前小时各区间断面客流（上行/下行）'));
             const chart = h('div');
-            const drawChart = function () { chart.innerHTML = ''; chart.appendChild(self.loadChart(r, ri, W())); };
-            drawChart(); self.live.push(function () { if (Math.random() < 0.25) drawChart(); });
+            // 断面客流只在数值真正变化时重画，避免每秒随机重建 SVG
+            let chartKey = '';
+            const drawChart = function () {
+              const w = W(), g2 = g.model, re = mnet.rideEdge[ri];
+              let sum = 0;
+              for (let k = 0; k < re.length; k++) sum += g2.edgeLoadAt(re[k], w);
+              const key = w.p0 + '|' + w.p1 + '|' + w.w0.toFixed(3) + '|' + w.w1.toFixed(3) + '|' + Math.round(sum) + '|' + Math.round(g2.freqAt(ri, w) * 100);
+              if (key === chartKey) return;
+              chartKey = key;
+              chart.innerHTML = ''; chart.appendChild(self.loadChart(r, ri, w));
+            };
+            drawChart(); self.live.push(drawChart);
             b.appendChild(chart);
             b.appendChild(h('div', { class: 'note', style: { marginTop: '6px' } }, '列车数由系统自动调配：车站越多、站距越小的城区线基础班次越密，站距大的郊区线较疏，每条线路至少 2 列；客流超过时按最大断面客流加车（最小间隔 2 分钟）。达到上限后体现为拥挤，需要升级车站以加长编组或修建平行线路分流。'));
             return b;

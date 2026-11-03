@@ -537,26 +537,31 @@
   };
   UI.prototype.drawOverlay = function (ctx, R) { this.tools.drawOverlay(ctx, R); };
 
+  // 文本只在真正变化时写入，避免每 250 ms 重新解析 innerHTML
+  function setHTML(el, s) { if (el._h !== s) { el._h = s; el.innerHTML = s; } }
+  function setText(el, s) { if (el._t !== s) { el._t = s; el.textContent = s; } }
   UI.prototype.updateTop = function () {
     const g = this.g(), c = this.pills, d = g.model.daily || {};
     const W = g.model.weights(g.clock.minute);
     const per = CFG.periods[g.model.hourPeriod[Math.floor(g.clock.minute / 60) % 24]];
-    c.date.v.innerHTML = U.esc(g.clock.y + '年' + g.clock.m + '月' + g.clock.d + '日') + ' <small>' + U.fmtClock(g.clock.minute) + '</small>';
+    setHTML(c.date.v, U.esc(g.clock.y + '年' + g.clock.m + '月' + g.clock.d + '日') + ' <small>' + U.fmtClock(g.clock.minute) + '</small>');
     const slowing = g.peakSlowNow();
-    c.date.k.textContent = UI.weekdayName(g.clock) + ' · ' + per.name + (slowing ? ' · 慢放中' : '');
+    setText(c.date.k, UI.weekdayName(g.clock) + ' · ' + per.name + (slowing ? ' · 慢放中' : ''));
     if (slowing !== this._peakOn) { this._peakOn = slowing; this.tbtns.peak.classList.toggle('active', slowing); }
-    c.date.el.setAttribute('data-tip', g.stageName() + ' · 点击查看日期、时段与城市发展');
+    const tip = g.stageName() + ' · 点击查看日期、时段与城市发展';
+    if (tip !== this._dateTip) { this._dateTip = tip; c.date.el.setAttribute('data-tip', tip); }
     const rg = this.dayRing, frac = (g.clock.minute % 1440) / 1440;
     rg.arc.setAttribute('stroke-dashoffset', String(rg.C * (1 - frac)));
     const night = g.clock.minute < 360 || g.clock.minute >= 1140;
     if (night !== rg.night) { rg.night = night; rg.ico.innerHTML = night ? I.moon : I.sun; rg.el.classList.toggle('night', night); }
-    if (g.econ.isFree()) c.money.v.innerHTML = '∞ <small>自由建造</small>';
+    if (g.econ.isFree()) setHTML(c.money.v, '∞ <small>自由建造</small>');
     else {
       const f = g.econ.funds;
       if (this._funds != null && Math.abs(f - this._funds) >= 300) this.moneyFloat(f - this._funds);
       this.tweenNum(c.money.v, this._funds == null ? f : this._funds, f, function (x) { return U.fmtMoney(x); });
       this._funds = f;
-      c.money.v.className = 'v' + (f < 0 ? ' bad' : '');
+      const cls = 'v' + (f < 0 ? ' bad' : '');
+      if (c.money.v.className !== cls) c.money.v.className = cls;
     }
     const tot = this._tot && this._totCity === g.city && this._totVer === g.city.version ? this._tot : (this._tot = g.city.totals(), this._totCity = g.city, this._totVer = g.city.version, this._tot);
     this.tweenNum(c.pop.v, this._popShown == null ? tot.pop : this._popShown, tot.pop, U.fmtPeople);
@@ -568,28 +573,31 @@
       if (Math.abs(dlt) < (pct ? 0.0005 : 0.005)) return '';
       return '<span class="trend ' + ((betterUp ? dlt > 0 : dlt < 0) ? 'good' : 'bad') + '">' + (dlt > 0 ? '▲' : '▼') + '</span>';
     };
-    c.share.v.innerHTML = U.fmtPct(d.metroShare || 0) + ' ' + trend(d.metroShare || 0, prev && prev.share, true, true);
+    setHTML(c.share.v, U.fmtPct(d.metroShare || 0) + ' ' + trend(d.metroShare || 0, prev && prev.share, true, true));
     if (!this._congT || performance.now() - this._congT > 900) { this._congT = performance.now(); this._cong = g.model.cityCongAt(W); }
-    const cg = this._cong;
-    c.cong.v.innerHTML = cg.toFixed(2) + ' <small>' + CM.Model.congestionNames[CM.Model.congestionLevel(cg)] + '</small>';
-    c.cong.badge.className = 'badge ' + ['b-green', 'b-gold', 'b-orange', 'b-red'][CM.Model.congestionLevel(cg)];
+    const cg = this._cong, lvl = CM.Model.congestionLevel(cg);
+    setHTML(c.cong.v, cg.toFixed(2) + ' <small>' + CM.Model.congestionNames[lvl] + '</small>');
+    const cbadge = 'badge ' + ['b-green', 'b-gold', 'b-orange', 'b-red'][lvl];
+    if (c.cong.badge.className !== cbadge) c.cong.badge.className = cbadge;
     // 城市经济：最近一年的实际增速（尚无完整年度时为本年预测）与经济环境；教程等未启用的地图不显示
     const hasEco = !!(g.macro && CM.Macro);
     c.econ.el.classList.toggle('gone', !hasEco);
     if (hasEco && (!this._ecoT || performance.now() - this._ecoT > 1500 || this._ecoRev !== g.macro.rec.length)) {
       this._ecoT = performance.now(); this._ecoRev = g.macro.rec.length;
       const mv = CM.Macro.view(g), L = mv.last, gr = L && L.growth != null ? L.growth : mv.fc.growth;
-      c.econ.v.innerHTML = U.esc(gr == null ? '—' : UI.pctS(gr)) + ' <small>' + U.esc(mv.env.label) + '</small>';
-      c.econ.k.textContent = L && L.growth != null ? L.y + ' 年实际增长' : '本年预测增长';
-      c.econ.badge.className = 'badge ' + (mv.env.cls === 'good' ? 'b-green' : (mv.env.cls === 'bad' ? 'b-red' : (mv.env.cls === 'warn' ? 'b-orange' : 'b-violet')));
-      c.econ.el.setAttribute('data-tip', '城市经济：' + mv.env.label + ' · ' + (L ? L.y + ' 年 GDP ' + UI.fmtBig(L.nom) : '本年 GDP 预测 ' + UI.fmtBig(mv.fc.nom)) + ' · 点击查看');
+      setHTML(c.econ.v, U.esc(gr == null ? '—' : UI.pctS(gr)) + ' <small>' + U.esc(mv.env.label) + '</small>');
+      setText(c.econ.k, L && L.growth != null ? L.y + ' 年实际增长' : '本年预测增长');
+      const ebadge = 'badge ' + (mv.env.cls === 'good' ? 'b-green' : (mv.env.cls === 'bad' ? 'b-red' : (mv.env.cls === 'warn' ? 'b-orange' : 'b-violet')));
+      if (c.econ.badge.className !== ebadge) c.econ.badge.className = ebadge;
+      const etip = '城市经济：' + mv.env.label + ' · ' + (L ? L.y + ' 年 GDP ' + UI.fmtBig(L.nom) : '本年 GDP 预测 ' + UI.fmtBig(mv.fc.nom)) + ' · 点击查看';
+      if (etip !== this._ecoTip) { this._ecoTip = etip; c.econ.el.setAttribute('data-tip', etip); }
     }
     const sat = g.econ.sat;
-    c.sat.v.innerHTML = Math.round(sat) + ' ' + trend(sat, prev && prev.sat, true);
+    setHTML(c.sat.v, Math.round(sat) + ' ' + trend(sat, prev && prev.sat, true));
     const sk = sat >= 60 ? 'smile' : (sat >= 40 ? 'meh' : 'frown');
     if (c.sat.ico !== sk) { c.sat.ico = sk; c.sat.badge.className = 'badge ' + (sk === 'smile' ? 'b-green' : (sk === 'meh' ? 'b-orange' : 'b-red')); c.sat.badge.innerHTML = ''; c.sat.badge.appendChild(ic(sk)); }
     const n = g.tasks.active.length;
-    this.taskCnt.textContent = n; this.taskCnt.style.display = n ? '' : 'none';
+    setText(this.taskCnt, n); this.taskCnt.style.display = n ? '' : 'none';
     const s = this.save;
     this.hbtns.menu.classList.toggle('warn-dot', s.state === 'error');
     // 存档状态：保存中在菜单按钮上显示脉动小点；悬停提示注明是否已保存
@@ -621,12 +629,12 @@
   // 数字滚动：数值变化时在约 0.45 秒内平滑过渡
   UI.prototype.tweenNum = function (el, from, to, fmt) {
     if (el._tw && el._tw.to === to) return;
-    if (from === to || CM.Settings.reducedMotion() || Math.abs(to - from) < Math.abs(to) * 0.0005) { el._tw = { to: to }; el.textContent = fmt(to); return; }
+    if (from === to || CM.Settings.reducedMotion() || Math.abs(to - from) < Math.abs(to) * 0.0005) { el._tw = { to: to }; el._t = el.textContent = fmt(to); return; }
     const t0 = performance.now(), tw = el._tw = { to: to };
     const step = function (t) {
       if (el._tw !== tw) return;
       const k = Math.min(1, (t - t0) / 450), e = 1 - Math.pow(1 - k, 3);
-      el.textContent = fmt(from + (to - from) * e);
+      el._t = el.textContent = fmt(from + (to - from) * e);
       if (k < 1) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);

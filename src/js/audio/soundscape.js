@@ -170,8 +170,14 @@
     // Retain phases for currently audible trains, without dropping all transitions
     // when a complex network has more than 64 nearby trains.
     for(const id of seen.keys())if(!audible.has(id))seen.delete(id);
-    cand.sort(function (a, b) { return (b.fol - a.fol) || (b.loud - a.loud); });
-    const top = cand.slice(0, S.voices.length), used = new Set();
+    // 只需要最响的几列：用插入法维护前 N 名，避免每帧对全部候选排序
+    const VN = S.voices.length, top = [];
+    for (const c of cand) {
+      let i = top.length;
+      while (i > 0 && ((top[i - 1].fol - c.fol) || (top[i - 1].loud - c.loud)) < 0) i--;
+      if (i < VN) { top.splice(i, 0, c); if (top.length > VN) top.pop(); }
+    }
+    const used = new Set();
     // 保持同一列车占用同一声部，避免声像与音色跳变
     for (const v of S.voices) { const c = top.find(function (x) { return x.t.id === v.id; }); if (c) { used.add(c); v.c = c; } else v.c = null; }
     for (const c of top) if (!used.has(c)) { const v = S.voices.find(function (x) { return !x.c; }); if (v) { v.c = c; v.id = c.t.id; } }

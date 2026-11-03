@@ -121,13 +121,12 @@
   };
   Renderer.prototype.textWidth = function (ctx, text) {
     const key = ctx.font + '|' + text;
-    let width = this.textWidths.get(key);
-    if (width === undefined) {
-      width = ctx.measureText(text).width;
-      if (this.textWidths.size >= 4096) this.textWidths.delete(this.textWidths.keys().next().value);
-      this.textWidths.set(key, width);
-    } else { this.textWidths.delete(key); this.textWidths.set(key, width); }
-    return width;
+    const width = this.textWidths.get(key);
+    if (width !== undefined) return width;
+    const w = ctx.measureText(text).width;
+    if (this.textWidths.size >= 4096) this.textWidths.delete(this.textWidths.keys().next().value);
+    this.textWidths.set(key, w);
+    return w;
   };
   // 相机移动时只重排标注，字形与描边按原生像素密度复用；避免每帧重新栅格化全部站名。
   // 缓存有独立上限，主题、字体和显示密度都参与键值，换图时也不会无限积累。
@@ -228,7 +227,9 @@
     if (!lvl) return;
     const k = LEVELS.indexOf(lvl), cam = this.cam, vw = b.x1 - b.x0, vh = b.y1 - b.y0, keep = this.frame - 1, cap = this.cacheLimit();
     const plan = [], todo = [];
-    if (k + 1 < LEVELS.length) plan.push([LEVELS[k + 1], -0.2, 100]);   // 视野中部约 1/3 面积（放大一档后的画面）
+    // 预绘更高一档只在缩放中或刚稳定时进行（缩放时很快会用到）；相机平移时只保留当前档的外圈，
+    // 否则平移动画每帧都要预绘整整一档新块，把分帧预算全吃掉
+    if (k + 1 < LEVELS.length && (this.cam.zoom !== this.cam.tz || this.time - (this._zoomAt || -9) < 1.5)) plan.push([LEVELS[k + 1], -0.2, 100]);
     plan.push([lvl, 0.3, 200]);
     if (k > 0) plan.push([LEVELS[k - 1], 0.8, 300]);
     for (const p of plan) {
@@ -506,6 +507,7 @@
       const k = 1 - Math.exp(-dt * 14);
       c.zoom = Math.exp(U.lerp(Math.log(c.zoom), Math.log(c.tz), k));
       if (Math.abs(c.zoom - c.tz) / c.tz < 0.002) c.zoom = c.tz;
+      this._zoomAt = this.time;   // 预绘更高一档只在缩放的余温期内进行
       if (c.anchor) {
         this.computeTransform();
         const M = this.M, a = (c.anchor.sx - this.w / 2) / c.zoom, b = (c.anchor.sy - this.h / 2) / c.zoom;
@@ -537,16 +539,29 @@
     this.syncMetroMask();
     if (!city.dirty.size) return;
     this.cancelIsoJob();
-    const keys = new Set(), ikeys = new Set(), self = this;
+    const keys = this._dirtyKeys || (this._dirtyKeys = new Set());
+    const ikeys = this._dirtyIKeys || (this._dirtyIKeys = new Set());
+    keys.clear(); ikeys.clear();
+    const self = this, CW = city.W;
+    const C0 = CHUNK_PX / LEVELS[0], C1 = CHUNK_PX / LEVELS[1], C2 = CHUNK_PX / LEVELS[2], C3 = CHUNK_PX / LEVELS[3];
+    const I0 = self.isoChunkGeom(LEVELS[0]), I1 = self.isoChunkGeom(LEVELS[1]), I2 = self.isoChunkGeom(LEVELS[2]), I3 = self.isoChunkGeom(LEVELS[3]);
     city.dirty.forEach(function (c) {
-      const i = c % city.W, j = (c / city.W) | 0;
-      for (const lvl of LEVELS) {
-        const C = CHUNK_PX / lvl, Ci = self.isoChunkGeom(lvl);
-        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
-          keys.add(lvl + ':' + Math.floor((i + di * 0.6) / C) + ':' + Math.floor((j + dj * 0.6) / C));
+      const i = c % CW, j = (c / CW) | 0;
+      // 4 个级别 × 3×3 邻块：键的级别前缀与坐标直接拼，避免嵌套循环里的临时对象
+      for (let dj = -1; dj <= 1; dj++) {
+        const y = j + dj * 0.6;
+        for (let di = -1; di <= 1; di++) {
+          const x = i + di * 0.6;
+          keys.add('8:' + Math.floor(x / C0) + ':' + Math.floor(y / C0));
+          keys.add('16:' + Math.floor(x / C1) + ':' + Math.floor(y / C1));
+          keys.add('32:' + Math.floor(x / C2) + ':' + Math.floor(y / C2));
+          keys.add('64:' + Math.floor(x / C3) + ':' + Math.floor(y / C3));
         }
-        ikeys.add('i' + lvl + ':' + Math.floor(i / Ci) + ':' + Math.floor(j / Ci));
       }
+      ikeys.add('i8:' + Math.floor(i / I0) + ':' + Math.floor(j / I0));
+      ikeys.add('i16:' + Math.floor(i / I1) + ':' + Math.floor(j / I1));
+      ikeys.add('i32:' + Math.floor(i / I2) + ':' + Math.floor(j / I2));
+      ikeys.add('i64:' + Math.floor(i / I3) + ':' + Math.floor(j / I3));
     });
     city.dirty.clear();
     const g = this.ground, iso = this.iso;
@@ -556,21 +571,27 @@
     this.heatKey = '';
   };
   // to：淘汰到的像素数；keep：used 不小于它的块保留（默认只保留本帧用到的）
+  // 按 used 分桶后从最旧的一桶开始淘汰，避免每次淘汰都对全部缓存做一次全量排序
   Renderer.prototype.evict = function (to, keep) {
     const cap = this.cacheLimit();
     if (this.themeStash && this.cachePx + this.themeStash.px > cap) this.dropThemeStash();
     if (to == null) { if (this.cachePx <= cap) return; to = cap * 0.8; }
     if (keep == null) keep = this.frame;
-    const all = [];
-    this.ground.forEach(function (e, k) { all.push([e, k, 'g']); });
-    this.iso.forEach(function (e, k) { all.push([e, k, 'i']); });
-    all.sort(function (a, b) { return a[0].used - b[0].used; });
-    for (const it of all) {
-      if (this.cachePx <= to) break;
-      if (it[0].used >= keep) continue;
-      (it[2] === 'g' ? this.ground : this.iso).delete(it[1]);
-      this.cachePx -= it[0].px;
-      it[0].cv.width = it[0].cv.height = 1;
+    const self = this, buckets = new Map();
+    const bucket = function (n) { let b = buckets.get(n); if (!b) { b = []; buckets.set(n, b); } return b; };
+    this.ground.forEach(function (e, k) { bucket(e.used).push([e, k, 'g']); });
+    this.iso.forEach(function (e, k) { bucket(e.used).push([e, k, 'i']); });
+    const ages = [];
+    buckets.forEach(function (b, n) { if (n < keep) ages.push(n); });
+    ages.sort(function (a, b) { return a - b; });
+    outer: for (const n of ages) {
+      const b = buckets.get(n);
+      for (const it of b) {
+        if (self.cachePx <= to) break outer;
+        (it[2] === 'g' ? self.ground : self.iso).delete(it[1]);
+        self.cachePx -= it[0].px;
+        it[0].cv.width = it[0].cv.height = 1;
+      }
     }
   };
   function makeCanvas(w, h) { const c = document.createElement('canvas'); c.width = Math.max(1, Math.ceil(w)); c.height = Math.max(1, Math.ceil(h)); return c; }
@@ -2618,9 +2639,14 @@
       const C = this.isoChunkGeom(ilvl);
       const ci0 = Math.max(0, Math.floor(wx0 / C) - 1), ci1 = Math.min(Math.ceil(CFG.W / C) - 1, Math.floor(wx1 / C) + 1);
       const cj0 = Math.max(0, Math.floor(wy0 / C) - 1), cj1 = Math.min(Math.ceil(CFG.H / C) - 1, Math.floor(wy1 / C) + 1);
-      const list = [];
-      for (let cj = cj0; cj <= cj1; cj++) for (let ci = ci0; ci <= ci1; ci++) list.push([ci, cj]);
-      list.sort(function (a, b) { return (a[0] + a[1]) - (b[0] + b[1]) || a[0] - b[0]; });
+      // 沿等距视角的前后顺序（反对角线）直接生成，省掉每帧压数组再加一次全排序
+      const diag = this._diag || (this._diag = []);
+      diag.length = 0;
+      for (let s = ci0 + cj0; s <= ci1 + cj1; s++) {
+        const ja = Math.max(cj0, s - ci1), jb = Math.min(cj1, s - ci0);
+        for (let cj = ja; cj <= jb; cj++) diag.push([s - cj, cj]);
+      }
+      const list = diag;
       const buckets = agents && agentAlpha > 0 ? agents.bucket(C, this) : null;
       const sc = z / ilvl;
       // 地标按其中心所在分块归组，在该分块之后绘制（与前后建筑正确遮挡）
@@ -2719,7 +2745,10 @@
       if (!active || this.groundJob.ver !== gver) this.cancelGroundJob();
       else active.d = Math.min(active.d, -0.7);
     }
-    queue.sort(function (a, b) { return a.d - b.d; });
+    // 队列已接近有序：先扫一遍确认，只有确实乱序时才排序
+    let sorted = true;
+    for (let i = 1; i < queue.length; i++) if (queue[i].d < queue[i - 1].d) { sorted = false; break; }
+    if (!sorted) queue.sort(function (a, b) { return a.d - b.d; });
     const queueStart = performance.now();
     let n = 0;
     for (const q of queue) {
@@ -4310,24 +4339,29 @@
     const step = (this.dt || 0.016) / 0.25;
     const labA = U.clamp((this.labA == null ? (this.labelsOn ? 1 : 0) : this.labA) + (this.labelsOn ? step : -step), 0, 1);
     const mapLabA = U.clamp((this.mapLabA == null ? (this.mapLabelsOn !== false ? 1 : 0) : this.mapLabA) + (this.mapLabelsOn !== false ? step : -step), 0, 1);
-    const key = [this.w, this.h, this.dpr, this.z, this.ox, this.oy, this.hs, this.M.join(','), this.cam.under, this.tEase > 0.5, this.bFade > 0.5, this.game.city.version, this.game.netVersion, this.layer, labA, mapLabA, this.themeName, AX.flag(), document.fonts ? document.fonts.status : '', this.layerSig()].join('|');
+    // 文字内容与缩放决定整层位图；相机平移只是整体位移，用 drawImage 重新定位，不重排站名
+    const key = [this.w, this.h, this.dpr, this.z, this.hs, this.M.join(','), this.cam.under > 0.5, this.tEase > 0.5, this.bFade > 0.5, this.game.city.version, this.game.netVersion, this.layer, labA > 0.001 && labA < 0.999, mapLabA > 0.001 && mapLabA < 0.999, this.themeName, AX.flag(), document.fonts ? document.fonts.status : '', this.layerSig()].join('|');
     let image = this.labelImage;
     if (!image || image.key !== key || image.C !== this.drawnC) {
       if (this.lastLabelKey !== key || this.lastLabelC !== this.drawnC) {
         this.lastLabelKey = key; this.lastLabelC = this.drawnC;
-        this.drawLabelContent(ctx, ui); return;
+        this.drawLabelContent(ctx, ui, 0, 0); return;
       }
       const cv = image && image.cv.width === this.cv.width && image.cv.height === this.cv.height ? image.cv : makeCanvas(this.cv.width, this.cv.height);
       const x = cv.getContext('2d');
       x.setTransform(1, 0, 0, 1, 0, 0); x.clearRect(0, 0, cv.width, cv.height); x.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-      this.drawLabelContent(x, ui);
-      image = this.labelImage = { key: key, C: this.drawnC, cv: cv };
+      this.drawLabelContent(x, ui, this.ox, this.oy);
+      image = this.labelImage = { key: key, C: this.drawnC, cv: cv, ox: this.ox, oy: this.oy };
     } else { this.labA = labA; this.mapLabA = mapLabA; }
-    ctx.drawImage(image.cv, 0, 0, this.w, this.h);
+    const dx = this.ox - image.ox, dy = this.oy - image.oy;
+    if (dx || dy) ctx.drawImage(image.cv, 0, 0, this.w, this.h, dx, dy, this.w, this.h);
+    else ctx.drawImage(image.cv, 0, 0, this.w, this.h);
   };
-  Renderer.prototype.drawLabelContent = function (ctx, ui) {
+  Renderer.prototype.drawLabelContent = function (ctx, ui, ox, oy) {
     const g = this.game, z = this.z, v = this.view, city = g.city;
     if (g.preview) return;   // 开始界面背景不显示标注
+    // 排版坐标以 (ox, oy) 为原点：空间关系与投影无关，整层可平移复用
+    const PX = ox || 0, PY = oy || 0;
     // 标注开关渐隐渐现（不闪切）
     const step = (this.dt || 0.016) / 0.25;
     this.labA = U.clamp((this.labA == null ? (this.labelsOn ? 1 : 0) : this.labA) + (this.labelsOn ? step : -step), 0, 1);
@@ -4365,9 +4399,9 @@
         if (old.length >= 3 || U.dist(arr[0], arr[1], arr[arr.length - 2], arr[arr.length - 1]) < 70) continue;
         const label = AX.number(line), w = Math.max(22, ctx.measureText(label).width + 10), col = AX.line(line);
         for (const f of [0.5, 0.7, 0.3]) {
-          const i = Math.round((arr.length / 2 - 1) * f) * 2, x = arr[i], y = arr[i + 1];
+          const i = Math.round((arr.length / 2 - 1) * f) * 2, x = arr[i] - PX, y = arr[i + 1] - PY;
           if (x < w || x > this.w - w || y < 15 || y > this.h - 15 || old.some(function (p) { return U.dist(x, y, p[0], p[1]) < 190; })) continue;
-          if (this.stPx && this.stPx.some(function (p) { return p && U.dist(x, y, p.x, p.y) < 26; })) continue;
+          if (this.stPx && this.stPx.some(function (p) { return p && U.dist(x + PX, y + PY, p.x, p.y) < 26; })) continue;
           if (!fits(x - w / 2 - 3, y - 12, x + w / 2 + 3, y + 12)) continue;
           ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x - w / 2, y - 9, w, 18, 6); else ctx.rect(x - w / 2, y - 9, w, 18);
           ctx.fillStyle = col; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
@@ -4378,7 +4412,7 @@
     }
     const busyLayer = this.layer === 'cong' || this.layer === 'flow' || this.layer === 'station' || this.layer === 'fac' || this.layer === 'gap';   // 分析图层隐藏区名与未开放区域，站名尽量避让显示
     const lr = busyLayer && this._layerRectsFor === this.layer ? this._layerRects : null;
-    if (lr) for (const b of lr) occupy(b[0], b[1], b[2], b[3]);
+    if (lr) for (const b of lr) occupy(b[0] - PX, b[1] - PY, b[2] - PX, b[3] - PY);
     const named = this.layer === 'station' && this._layerRectsFor === 'station' ? this._layerNamed : null;
     if (C && this.stPx && z >= 8.5 && this.labA > 0.01) {
       ctx.globalAlpha = this.labA;
@@ -4387,7 +4421,8 @@
       const order = this.stPx.map(function (p, i) { return [p, i]; }).filter(function (a) { return a[0]; });
       order.sort(function (a, b) { return (C.stationLines[b[1]].size - C.stationLines[a[1]].size) || ({ L: 2, M: 1, S: 0 }[C.stations[b[1]].size] - { L: 2, M: 1, S: 0 }[C.stations[a[1]].size]); });
       for (const it of order) {
-        const p = it[0], s = C.stations[it[1]];
+        const p0 = it[0], s = C.stations[it[1]];
+        const p = { x: p0.x - PX, y: p0.y - PY, r: p0.r };
         if (s.portal && CM.Fac && CM.Fac.isPortalStation(s) && this.layer === 'none' && this.cam.under < 0.5) continue;
         if (named && named.has(s.id)) continue;
         const w = this.textWidth(ctx, s.name);
@@ -4414,6 +4449,7 @@
         if (lm.x < v.x0 || lm.x > v.x1 || lm.y < v.y0 || lm.y > v.y1) continue;
         const h = this.tEase > 0.5 && this.bFade > 0.5 ? (lm.h ? lm.h * EX : 34 * EX * 1.6) : 0;
         const p = this.P(lm.x, lm.y, h);
+        p.x -= PX; p.y -= PY;
         ctx.font = '11px ' + FONT;
         const text = '◆ ' + lm.name;
         const w = this.textWidth(ctx, text);
@@ -4440,6 +4476,7 @@
         const len = geom.len;
         if (len < 2.4) continue;
         const pt = this.P(geom.x, geom.y, 0);
+        pt.x -= PX; pt.y -= PY;
         if (pt.x < 0 || pt.y < 0 || pt.x > this.w || pt.y > this.h) continue;
         const text = gr.name;
         const tw = this.textWidth(ctx, text);
@@ -4452,6 +4489,7 @@
       const a = U.clamp((16 - z) / 5, 0, 1) * 0.75;
       for (const dl of (city.districtLabels || [])) {
         const p = this.P(dl[1], dl[2], 0), font = '600 ' + (z < 9 ? 15 : 17) + 'px ' + FONT;
+        p.x -= PX; p.y -= PY;
         ctx.globalAlpha = a * this.mapLabA;
         halo(dl[0], p.x, p.y, font, TH.district, 'center');
         // 占位：之后的未开放区域标签避开区名
@@ -4469,13 +4507,14 @@
         const cx = lock.info[k].x, cy = lock.info[k].y;
         if (cx < v.x0 || cx > v.x1 || cy < v.y0 || cy > v.y1) continue;
         const p = this.P(cx, cy, 0);
+        p.x -= PX; p.y -= PY;
         const text = '🔒 ' + rg.name.replace(/（.*）/, '') + ' · ' + city.lockText(city.cellAt(cx, cy));
         ctx.font = '11px ' + FONT;
         const w = this.textWidth(ctx, text);
         // 靠近地图边缘的区域：标签整体收进地图范围，不越出边界
-        const xl = this.P(0, cy, 0).x + w / 2 + 6, xr = this.P(CFG.W, cy, 0).x - w / 2 - 6;
+        const xl = this.P(0, cy, 0).x - PX + w / 2 + 6, xr = this.P(CFG.W, cy, 0).x - PX - w / 2 - 6;
         if (xl <= xr) p.x = U.clamp(p.x, xl, xr);
-        const yt = this.P(cx, 0, 0).y + 12, yb = this.P(cx, CFG.H, 0).y - 12;
+        const yt = this.P(cx, 0, 0).y - PY + 12, yb = this.P(cx, CFG.H, 0).y - PY - 12;
         if (yt <= yb) p.y = U.clamp(p.y, yt, yb);
         if (!fits(p.x - w / 2, p.y - 8, p.x + w / 2, p.y + 8)) continue;
         halo(text, p.x, p.y, '11px ' + FONT, TH.lockInk, 'center');

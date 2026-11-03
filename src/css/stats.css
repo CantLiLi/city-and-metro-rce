@@ -1,0 +1,65 @@
+/* 城市与地铁 · 统计面板与图表 */
+
+/* ---------- 统计面板 ---------- */
+#stats { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(8, 14, 26, 0.38); backdrop-filter: blur(6px); transition: opacity .3s var(--ease); }
+#stats.hidden { opacity: 0; pointer-events: none; }
+.stats-win { width: min(1180px, calc(100vw - 32px)); height: min(820px, calc(100vh - 40px)); display: flex; flex-direction: column; background: var(--bg); border-radius: 24px; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35); overflow: hidden; border: 1px solid var(--line); animation: cardIn .4s var(--spring); }
+.stats-head { display: flex; align-items: center; gap: 12px; padding: 14px 16px 12px 18px; background: var(--surface-solid); border-bottom: 1px solid var(--line); }
+.stats-head h2 { margin: 0; font-size: 18px; }
+.stats-tabs { display: flex; gap: 4px; margin-left: 18px; }
+.stats-tabs button { border: 0; background: transparent; padding: 8px 14px; border-radius: 10px; cursor: pointer; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 6px; transition: background .15s, color .15s; }
+.stats-tabs button .ico { width: 16px; height: 16px; }
+.stats-tabs button:hover { background: var(--hover); color: var(--text); }
+.stats-tabs button.on { background: var(--accent-soft); color: var(--accent); }
+.stats-body { flex: 1; overflow-y: auto; padding: 16px 18px 22px; }
+.kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
+@media (max-width: 760px), (max-width: 1024px) and (max-height: 520px) and (pointer: coarse) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+.kpi { background: var(--surface-solid); border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px 10px; display: flex; flex-direction: column; gap: 4px; }
+.kpi .top { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 500; }
+.kpi .top .badge { width: 26px; height: 26px; border-radius: 8px; }
+.kpi .top .badge .ico { width: 15px; height: 15px; }
+.kpi .val { font-size: 24px; font-weight: 800; letter-spacing: .3px; }
+.kpi .val small { font-size: 12px; font-weight: 500; color: var(--muted); }
+.kpi .delta { font-size: 11.5px; font-weight: 600; }
+.kpi .spark svg { display: block; width: 100%; height: 34px; margin-top: 2px; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 12px; }
+.chart-card { background: var(--surface-solid); border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px 10px; position: relative; }
+.chart-card .ch-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.chart-card .ch-title { font-weight: 700; font-size: 14px; flex: 1; }
+.chart-card .ch-sub { font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+.ch-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); margin: 2px 0 4px; }
+.ch-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.ch-legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.ch-legend i.sq { width: 10px; height: 10px; border-radius: 3px; }
+.ch-plot { position: relative; }
+.ch-plot svg { display: block; width: 100%; overflow: visible; }
+.ch-tip { position: absolute; pointer-events: none; background: var(--surface-solid); border: 1px solid var(--line-strong); border-radius: 10px; padding: 7px 9px; font-size: 11.5px; box-shadow: var(--shadow-sm); white-space: nowrap; opacity: 0; transition: opacity .1s; z-index: 2; color: var(--text); }
+.ch-tip .tt { font-weight: 700; margin-bottom: 3px; }
+.ch-tip .tr { display: flex; align-items: center; gap: 6px; }
+.ch-tip .tr i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.ch-tbl { max-height: 220px; overflow: auto; margin-top: 6px; }
+.empty-chart { height: 160px; display: grid; place-items: center; color: var(--muted); font-size: 12.5px; text-align: center; }
+.chart-card.wide { grid-column: 1 / -1; }
+.chart-card .ch-head .btn { margin-left: auto; }
+.chart-card .ch-head .btn:not(.primary):not(.danger) { color: var(--muted); }
+.chart-card .ch-head .btn .ico { width: 14px; height: 14px; }
+.kpi.clickable { cursor: pointer; transition: transform .15s var(--ease), box-shadow .2s; }
+.kpi.clickable:hover { transform: translateY(-2px); box-shadow: var(--shadow-sm); background: var(--surface-solid); }
+.mode-bar { display: flex; gap: 2px; height: 18px; border-radius: 6px; overflow: hidden; background: var(--surface-3); }
+.mode-bar > div { height: 100%; transition: width .4s var(--ease); }
+.mode-bar > div:first-child { border-radius: 6px 0 0 6px; }
+.mode-bar > div:last-child { border-radius: 0 6px 6px 0; }
+.hbars { display: flex; flex-direction: column; gap: 5px; padding: 4px 0 2px; }
+.hbar-row { display: grid; grid-template-columns: minmax(70px, 30%) 1fr auto; align-items: center; gap: 10px; padding: 3px 4px; border-radius: 8px; cursor: default; }
+.hbar-row:hover { background: var(--hover); }
+.hbar-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.hbar-track { height: 12px; }
+.hbar-fill { height: 100%; border-radius: 0 4px 4px 0; min-width: 2px; }
+.hbar-val { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 56px; text-align: right; }
+.stats-head .seg-ctl button { padding: 4px 10px; font-size: 12px; }
+@media (max-width: 760px), (max-width: 1024px) and (max-height: 520px) and (pointer: coarse) {
+  .stats-tabs { margin-left: 0; overflow-x: auto; }
+  .stats-head { flex-wrap: wrap; }
+  .chart-grid { grid-template-columns: 1fr; }
+}
+
